@@ -1,0 +1,94 @@
+{
+  "projectType": "saas",
+  "projectName": "Backus Simulador de Camiones",
+  "projectDescription": "A real-time yard management web application for Backus that tracks truck queues, bay assignments, incidents, and shift-based logistics metrics through an interactive drag-and-drop interface backed by Supabase.",
+  "theme": "linden",
+  "primaryColor": "#7c3aed",
+  "lightColor": "#a78bfa",
+  "darkColor": "#4c1d95",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/roles-and-authentication",
+              "concepts/simulation-vs-real-mode",
+              "concepts/truck-types-and-bays",
+              "concepts/traffic-light-system"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/yard-map",
+              "features/queue-management",
+              "features/incident-management",
+              "features/session-reports",
+              "features/dashboard-panels"
+            ]
+          },
+          {
+            "group": "Setup & Configuration",
+            "pages": [
+              "setup/environment-variables",
+              "setup/supabase-database",
+              "setup/user-management",
+              "setup/deployment"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Data Model",
+            "pages": [
+              "reference/data-types",
+              "reference/database-schema",
+              "reference/supabase-views"
+            ]
+          },
+          {
+            "group": "Service API",
+            "pages": [
+              "reference/supabase-service",
+              "reference/bay-configuration"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Interactive drag-and-drop yard map with configurable bay assignments",
+    "Real-time queue management with traffic-light wait-time alerts (green/yellow/red)",
+    "Dual mode: simulation mode for training and real mode synced with Supabase",
+    "Role-based access: admin can configure thresholds, client has read-only monitoring",
+    "Incident tracking per truck (up to 3 per vehicle) with net time deduction from averages",
+    "Live dashboard panels: priority unit, average yard time, and per-shift truck counts",
+    "Mobile-responsive layout with tap-to-assign for touch devices",
+    "Session and daily reports with shift breakdowns (T1/T2/T3)"
+  ],
+  "publicApiSurface": [
+    "fetchCamionesCola(): Promise<Camion[]>",
+    "fetchUnidadPrioridad(): Promise<VwUnidadPrioridad | null>",
+    "fetchDashboardTurnos(): Promise<VwDashboardTurnos | null>",
+    "fetchPromedioPatioNeto(): Promise<VwPromedioPatioNeto | null>",
+    "abrirIncidencia(id_camion: number): Promise<AbrirIncidenciaResult>",
+    "cerrarIncidencia(id_camion: number): Promise<IncidenciaRow | null>",
+    "contarIncidencias(id_camion: number): Promise<number>",
+    "actualizarBahiaDirecto(id_viaje, bahia_actual, estado): Promise<boolean>",
+    "marcarSalidaDirecto(id_viaje: string): Promise<boolean>",
+    "loginUsuario(email, password): Promise<UsuarioLogin | null>",
+    "intervalAMinutos(interval: string): number",
+    "intervalATexto(interval: string): string"
+  ]
+}
