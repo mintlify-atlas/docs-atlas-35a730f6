@@ -1,0 +1,105 @@
+---
+title: "Truck types and bays"
+description: "Learn the truck type codes, bay identifiers, and which trucks are allowed in each bay."
+---
+
+The yard uses a compact coding system to describe truck types and operations. Understanding these codes is essential for correctly assigning trucks to bays and reading the queue.
+
+## Truck type codes
+
+| Code | Full name | Notes |
+|---|---|---|
+| `P` | Parihuelero | Standard pallet truck; admitted in all bays |
+| `J` | Jumbo | Large trailer; admitted in most bays |
+| `B` | Bi-tren | Double-trailer; admitted in most bays |
+| `T` | Tolva | Bulk/hopper truck; unload only, limited bays |
+| `O` | Otros | Any other type; treated like P/J/B for routing |
+
+## Operation codes
+
+| Code | Meaning |
+|---|---|
+| `C` | Carga (Load) |
+| `D` | Descarga (Unload) |
+
+## Products
+
+Products are associated with specific bay groups. The table below lists every product code used in the system:
+
+| Code | Description |
+|---|---|
+| Fardos | Bales |
+| Envases | Packaging / containers |
+| CPC | CPC product line |
+| PH | PH product line |
+| MIXD | Mixed unload |
+| PT | Product type PT |
+| PP | Product type PP |
+| MIXC | Mixed load |
+| ENVLT | Envases LT |
+
+## Bay configuration
+
+The yard has **10 bays** defined in `BAHIAS_CONFIG`. Each bay specifies which truck types are permitted and which products may be loaded or unloaded there.
+
+| Bay ID | Bay name | Permitted truck types | Unload products (D) | Load products (C) |
+|---|---|---|---|---|
+| `b0.1` | Bahía 0.1 | P, J, B, T, O | Fardos, Envases, CPC, PH, MIXD | — |
+| `b0.2` | Bahía 0.2 | P, J, B, T, O | Fardos, Envases, CPC, PH, MIXD | — |
+| `b1` | Bahía 1 | P, J, B, T, O | Fardos, Envases, CPC, PH, MIXD | — |
+| `b2` | Bahía 2 | P, J, B, T, O | Fardos, Envases, CPC, PH, MIXD | — |
+| `b3` | Bahía 3 | P, J, B, O | PT, MIXD | PP, PT, MIXC |
+| `b4` | Bahía 4 | P, J, B, O | PT, MIXD | PP, PT, MIXC |
+| `b5` | Bahía 5 | P, J, B, O | PT, MIXD | PP, PT, MIXC |
+| `b14` | Bahía 14 | P, J, B, O | PT, MIXD | PP, PT, MIXC, ENVLT |
+| `b10` | Bahía 10 | P only | PT, PP, MIXD | PP, PT, MIXC |
+| `b12` | Bahía 12 | P only | PT, PP, MIXD | PP, PT, MIXC |
+
+<Warning>
+  **Bays b10 and b12 require T2 coordination.** These bays only admit Parihuelero (P) trucks and display an alert: "¡ATENCIÓN! Coordina con T2." Always notify the T2 team before assigning a truck to either of these bays.
+</Warning>
+
+<Note>
+  Bays b0.1, b0.2, b1, and b2 are **unload-only** bays — the load product list for these bays is empty, so no truck can be assigned there for a load operation.
+</Note>
+
+## Assignment validation
+
+Before a truck can be dragged to a bay, the app runs `validarAsignacion()` which enforces four checks in order:
+
+```typescript
+const validarAsignacion = (camion: Camion, bahiaId: string): true | string => {
+  // Check 1: bay must not already have a truck in progress
+  if (enProceso[bahiaId]) return 'Bahía ocupada';
+
+  const bay = BAHIAS_CONFIG[bahiaId];
+
+  // Check 2: truck type must be in the bay's allowed list
+  if (!bay.camionesPermitidos.includes(camion.tipoCodigo))
+    return 'Tipo de camión no permitido';
+
+  // Check 3: the operation (C/D) must have a non-empty product list for this bay
+  const productos = bay.tareas[camion.operacionCodigo];
+  if (!productos?.length) return 'Operación no permitida en esta bahía';
+
+  // Check 4: the truck's product must match at least one allowed product,
+  //          or the bay accepts a wildcard (MIXD / MIXC)
+  const ok = productos.some(p =>
+    camion.producto.toUpperCase().includes(p.toUpperCase()) || p === 'MIXD' || p === 'MIXC'
+  );
+  if (!ok) return 'Producto no admitido en esta bahía';
+
+  return true;
+};
+```
+
+| Check | Failure message |
+|---|---|
+| Bay is already occupied | `'Bahía ocupada'` |
+| Truck type not in `camionesPermitidos` | `'Tipo de camión no permitido'` |
+| Operation has no products defined for bay | `'Operación no permitida en esta bahía'` |
+| Product not in bay's allowed product list | `'Producto no admitido en esta bahía'` |
+
+<Tip>
+  The `MIXD` and `MIXC` product codes act as wildcards during validation — any truck whose operation matches the bay will pass the product check when `MIXD` or `MIXC` is in the bay's product list.
+</Tip>

@@ -1,0 +1,91 @@
+---
+title: "Session reports"
+description: "View per-session and daily metrics including total units handled and average net yard time."
+---
+
+The **Session Report** modal (`ModalReporte`) appears automatically when you stop an active session by clicking **⏹ Stop** in the header. It can also be opened at any time during a session via the **📊 Reporte** button.
+
+## Opening the report
+
+1. Click **⏹** (the Stop / Iniciar toggle when a session is running).
+2. The session ends: `simulacionActiva` is set to `false`, `showReport` is set to `true`.
+3. `ModalReporte` renders with the final session data.
+
+## Data sources by mode
+
+<Tabs>
+  <Tab title="Simulation mode">
+    All metrics come from the local `stats` state accumulated during the session. No Supabase queries are made.
+
+    | Metric | Source |
+    |--------|--------|
+    | Total units | `stats.total` |
+    | Average yard time | Mean of `stats.tiemposTotalPatio` (minutes, calculated at finalization) |
+    | Shift 1 count | `stats.atendidosTurno1` |
+    | Shift 2 count | `stats.atendidosTurno2` |
+    | Shift 3 count | `stats.atendidosTurno3` |
+
+    Each time a truck is finalized in simulation mode, `registrarFinalizacionUnica` adds the elapsed time `(Date.now() - camion.tiempoEntradaPatio) / 60_000` to `tiemposTotalPatio` and increments the appropriate shift counter.
+  </Tab>
+  <Tab title="Real mode">
+    Metrics are fetched from Supabase views and refreshed every **6 s** while the modal is open.
+
+    | Metric | Supabase source |
+    |--------|----------------|
+    | Total units | Sum of `turno_1 + turno_2 + turno_3` from `vista_dashboard_turnos` (today's row) |
+    | Average yard time | `promedio_neto_patio` from `vista_promedio_patio_neto` (net, after incident deductions) |
+    | Shift 1 count | `vista_dashboard_turnos.turno_1` |
+    | Shift 2 count | `vista_dashboard_turnos.turno_2` |
+    | Shift 3 count | `vista_dashboard_turnos.turno_3` |
+
+    If Supabase returns null for the average (no finalized trucks yet today), the modal falls back to the local session average from `stats.tiemposTotalPatio`.
+  </Tab>
+</Tabs>
+
+## Report cards
+
+The modal displays five metric cards in a 2-column grid:
+
+<CardGroup cols={2}>
+  <Card title="Total atendidos" icon="truck">
+    Total trucks finalized. Label reads *(sesión)* in simulation mode and *(día)* in real mode.
+  </Card>
+  <Card title="Tiempo promedio patio" icon="clock">
+    Average yard dwell time in minutes. Net of incident time in real mode. Label reads *(sesión)* or *(día)*.
+  </Card>
+  <Card title="Turno 1  07:00–15:00" icon="sun">
+    Count of units finalized during the morning shift.
+  </Card>
+  <Card title="Turno 2  15:01–23:00" icon="cloud-sun">
+    Count of units finalized during the afternoon shift.
+  </Card>
+  <Card title="Turno 3  23:01–06:59" icon="moon">
+    Count of units finalized during the overnight shift.
+  </Card>
+</CardGroup>
+
+## Shift time ranges
+
+| Shift | Hours | Identifier |
+|-------|-------|------------|
+| T1 | 07:00 – 15:00 | `turno_1` |
+| T2 | 15:01 – 23:00 | `turno_2` |
+| T3 | 23:01 – 06:59 | `turno_3` |
+
+The current shift at finalization time is determined by `getTurnoActual()` in `SimuladorMapa`, which reads `new Date().getHours()` and maps it to one of the three ranges above.
+
+## Average time calculation
+
+**Simulation:** The average is the arithmetic mean of all values in `stats.tiemposTotalPatio`:
+
+```ts
+const avg = tiemposTotalPatio.reduce((acc, t) => acc + t, 0) / tiemposTotalPatio.length;
+```
+
+Times are in minutes, computed at each truck's finalization.
+
+**Real:** The Postgres view `vista_promedio_patio_neto` returns an interval string (`"HH:MM:SS"`). The frontend converts it to minutes with `intervalAMinutos(promedio_neto_patio)` before display.
+
+<Note>
+Incident durations are **not** deducted from the simulation average — incidents in simulation mode are counted but not timed. Only the real-mode Supabase view subtracts incident time.
+</Note>

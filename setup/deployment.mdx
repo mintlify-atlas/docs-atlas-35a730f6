@@ -1,0 +1,132 @@
+---
+title: "Deployment"
+description: "Deploy the application to Vercel or GitHub Pages."
+---
+
+The app is a Vite + React SPA. The build output goes to `dist/` and can be served from any static hosting platform.
+
+<Warning>
+  `VITE_*` environment variables are injected at **build time** by Vite — they are not read at runtime. You must configure all environment variables in your deployment platform **before** triggering the build. Changing a variable after the build requires a rebuild and redeploy.
+</Warning>
+
+## Build commands
+
+| Command | What it does |
+|---|---|
+| `npm run build` | Runs `tsc -b && vite build`, outputs to `dist/` |
+| `npm run preview` | Serves the `dist/` folder locally to test the production build |
+
+Test the production build locally before deploying:
+
+```bash
+npm run build
+npm run preview
+```
+
+## Deployment platforms
+
+<Tabs>
+  <Tab title="Vercel">
+    Vercel is the recommended platform. The `vercel.json` in the project root is already configured to handle SPA routing.
+
+    ### How SPA routing is configured
+
+    `vercel.json` rewrites every request to `index.html` so that React Router handles client-side navigation:
+
+    ```json
+    {
+      "rewrites": [
+        {
+          "source": "/(.*)",
+          "destination": "/index.html"
+        }
+      ]
+    }
+    ```
+
+    ### Deployment steps
+
+    <Steps>
+      <Step title="Import the repository">
+        Go to [vercel.com](https://vercel.com), click **Add New → Project**, and import your GitHub repository.
+      </Step>
+
+      <Step title="Configure environment variables">
+        In the Vercel project settings, go to **Settings → Environment Variables** and add all required variables:
+
+        | Variable | Value |
+        |---|---|
+        | `VITE_SUPABASE_URL` | Your Supabase project URL |
+        | `VITE_SUPABASE_ANON_KEY` | Your anon/public API key |
+        | `VITE_TABLE_VIAJES` | `viajes_camiones` (or your custom name) |
+        | `VITE_TABLE_INCIDENCIAS` | `incidencias` |
+        | `VITE_TABLE_ROLES` | `configuracion_roles` |
+        | `VITE_VIEW_PRIORIDAD` | `vista_unidad_prioridad` |
+        | `VITE_VIEW_TURNOS` | `vista_dashboard_turnos` |
+        | `VITE_VIEW_PROMEDIO` | `vista_promedio_patio_neto` |
+      </Step>
+
+      <Step title="Deploy">
+        Click **Deploy**. Vercel will run `npm run build` automatically.
+
+        On subsequent pushes to your main branch, Vercel will redeploy automatically.
+      </Step>
+    </Steps>
+
+    <Note>
+      The `vercel.json` rewrite rule is required for any route other than `/` to work on a hard refresh. Without it, Vercel would return a 404 for paths like `/dashboard`.
+    </Note>
+  </Tab>
+
+  <Tab title="GitHub Pages">
+    GitHub Pages deployment uses the `gh-pages` package, which is already included in `devDependencies`.
+
+    ### Deployment steps
+
+    <Steps>
+      <Step title="Set the homepage in package.json">
+        The `homepage` field is already set to the Backus project URL:
+
+        ```json
+        {
+          "homepage": "https://k3vosx.github.io/ProyectoBackus/"
+        }
+        ```
+
+        If you are deploying your own fork, update this to your GitHub Pages URL:
+        `https://<your-username>.github.io/<your-repo>/`
+      </Step>
+
+      <Step title="Configure environment variables">
+        Because `VITE_*` variables are build-time only, you cannot set them in the GitHub Pages hosting UI. Use one of these approaches:
+
+        - **GitHub Actions secret + workflow**: add repository secrets and inject them in a build workflow step.
+        - **Local build + deploy**: set variables in your local `.env`, build locally, then run `npm run deploy`.
+
+        <Warning>
+          Do not hardcode secrets directly in `package.json` scripts or workflow files that are committed to the repository.
+        </Warning>
+      </Step>
+
+      <Step title="Build and deploy">
+        Run the deploy script. `predeploy` runs the build automatically before deploying:
+
+        ```bash
+        npm run deploy
+        ```
+
+        This executes:
+        1. `npm run predeploy` → `npm run build` → `tsc -b && vite build`
+        2. `gh-pages -d dist` → pushes the `dist/` folder to the `gh-pages` branch
+      </Step>
+
+      <Step title="Enable GitHub Pages">
+        In your repository, go to **Settings → Pages** and set the source to the `gh-pages` branch, root directory.
+      </Step>
+    </Steps>
+
+    <Note>
+      GitHub Pages does not support server-side redirects, so deep links (e.g. navigating directly to a sub-route) will return a 404. A common workaround is a custom `404.html` that redirects to `index.html` with the path encoded in the query string, handled by a script in `index.html`.
+    </Note>
+  </Tab>
+</Tabs>

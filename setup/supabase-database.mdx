@@ -1,0 +1,180 @@
+---
+title: "Supabase database setup"
+description: "Create the required tables and views in your Supabase project."
+---
+
+The app expects three tables and three views to exist in the `public` schema of your Supabase project. All SQL should be executed in **Supabase Dashboard → SQL Editor**.
+
+<Warning>
+  Run each SQL block in the Supabase SQL Editor, not in a local PostgreSQL client. Some statements (e.g. `ALTER TABLE … ENABLE ROW LEVEL SECURITY`) require the Supabase superuser role that is only available through the dashboard.
+</Warning>
+
+## Database setup sequence
+
+<Steps>
+  <Step title="Create the viajes_camiones table">
+    This is the main table for truck journey records. Each row represents one truck's visit to the yard.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS public.viajes_camiones (
+      id                  SERIAL PRIMARY KEY,
+      id_viaje            TEXT UNIQUE,
+      tracto              TEXT,
+      tipo_unidad         TEXT,
+      operacion           TEXT,
+      tipo_carga          TEXT,
+      tipo_descarga       TEXT,
+      propietario         TEXT,
+      frotcom             TEXT,
+      fecha               DATE,
+      hora_llegada        TIME,
+      hora_salida         TIME,
+      estado              TEXT CHECK (estado IN ('En cola', 'Cargando', 'Descargando', 'Finalizado')),
+      bahia_actual        TEXT,
+      conteo_incidencias  INTEGER DEFAULT 0,
+      created_at          TIMESTAMPTZ DEFAULT NOW()
+    );
+    ```
+
+    | Column | Type | Notes |
+    |---|---|---|
+    | `id` | `serial` | Auto-incrementing primary key |
+    | `id_viaje` | `text UNIQUE` | Business-level journey identifier |
+    | `tracto` | `text` | Truck license plate |
+    | `tipo_unidad` | `text` | Unit type: parihuelero, jumbo, bi-tren, tolva, etc. |
+    | `operacion` | `text` | `'Carga'` or `'Descarga'` |
+    | `tipo_carga` | `text` | Load product type |
+    | `tipo_descarga` | `text` | Unload product type |
+    | `propietario` | `text` | Fleet owner |
+    | `frotcom` | `text` | Frotcom GPS identifier |
+    | `fecha` | `date` | Date of the visit |
+    | `hora_llegada` | `time` | Arrival time |
+    | `hora_salida` | `time` | Departure time (nullable until truck leaves) |
+    | `estado` | `text` | `'En cola'` \| `'Cargando'` \| `'Descargando'` \| `'Finalizado'` |
+    | `bahia_actual` | `text` | Currently assigned bay (nullable) |
+    | `conteo_incidencias` | `int` | Running count of incidents (default `0`) |
+    | `created_at` | `timestamptz` | Row creation timestamp |
+  </Step>
+
+  <Step title="Create the incidencias table">
+    Stores incident records linked to a truck journey. `duracion_calculada` is an auto-computed interval.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS public.incidencias (
+      id_incidencia       SERIAL PRIMARY KEY,
+      id_camion           INTEGER NOT NULL REFERENCES public.viajes_camiones(id),
+      hora_inicio         TIME NOT NULL,
+      hora_fin            TIME,
+      duracion_calculada  INTERVAL GENERATED ALWAYS AS (
+                            CASE
+                              WHEN hora_fin IS NOT NULL
+                              THEN hora_fin - hora_inicio
+                            END
+                          ) STORED
+    );
+    ```
+
+    | Column | Type | Notes |
+    |---|---|---|
+    | `id_incidencia` | `serial` | Primary key |
+    | `id_camion` | `int` | Foreign key → `viajes_camiones.id` |
+    | `hora_inicio` | `time` | When the incident started |
+    | `hora_fin` | `time` | When the incident ended (nullable while open) |
+    | `duracion_calculada` | `interval` | Auto-computed as `hora_fin − hora_inicio` |
+  </Step>
+
+  <Step title="Create the usuarios table">
+    Stores user authentication records. See [User management](/setup/user-management) for full details.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS public.usuarios (
+      id         SERIAL PRIMARY KEY,
+      email      TEXT NOT NULL UNIQUE,
+      pin        TEXT NOT NULL,
+      rol        TEXT NOT NULL CHECK (rol IN ('admin', 'cliente')),
+      nombre     TEXT,
+      activo     BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    ALTER TABLE public.usuarios ENABLE ROW LEVEL SECURITY;
+
+    DROP POLICY IF EXISTS "anon puede leer usuarios activos" ON public.usuarios;
+    CREATE POLICY "anon puede leer usuarios activos"
+      ON public.usuarios FOR SELECT
+      USING (activo = TRUE);
+    ```
+  </Step>
+
+  <Step title="Create the required views">
+    The three views power the real-time dashboard panels.
+
+    **`vista_unidad_prioridad`** — returns the single truck that has been waiting the longest (excluding finalized units), ordered by `hora_llegada` ascending:
+
+    ```sql
+    CREATE OR REPLACE VIEW public.vista_unidad_prioridad AS
+    SELECT
+      tracto,
+      hora_llegada,
+      bahia_actual,
+      (CURRENT_TIME - hora_llegada) AS tiempo_transcurrido
+    FROM public.viajes_camiones
+    WHERE estado <> 'Finalizado'
+    ORDER BY hora_llegada ASC
+    LIMIT 1;
+    ```
+
+    **`vista_dashboard_turnos`** — aggregates finalized trucks by shift for the current day. Shift boundaries: turno 1 (06:00–14:00), turno 2 (14:00–22:00), turno 3 (22:00–06:00):
+
+    ```sql
+    CREATE OR REPLACE VIEW public.vista_dashboard_turnos AS
+    SELECT
+      fecha,
+      COUNT(*) FILTER (
+        WHERE hora_salida >= '06:00' AND hora_salida < '14:00'
+      ) AS turno_1,
+      COUNT(*) FILTER (
+        WHERE hora_salida >= '14:00' AND hora_salida < '22:00'
+      ) AS turno_2,
+      COUNT(*) FILTER (
+        WHERE hora_salida >= '22:00' OR hora_salida < '06:00'
+      ) AS turno_3
+    FROM public.viajes_camiones
+    WHERE estado = 'Finalizado'
+    GROUP BY fecha;
+    ```
+
+    **`vista_promedio_patio_neto`** — returns the average net yard time (bruto time minus incident durations) for units finalized today:
+
+    ```sql
+    CREATE OR REPLACE VIEW public.vista_promedio_patio_neto AS
+    SELECT
+      AVG(
+        (hora_salida - hora_llegada)
+        - COALESCE((
+            SELECT SUM(duracion_calculada)
+            FROM public.incidencias
+            WHERE id_camion = v.id
+              AND duracion_calculada IS NOT NULL
+          ), INTERVAL '0')
+      ) AS promedio_neto_patio
+    FROM public.viajes_camiones v
+    WHERE estado = 'Finalizado'
+      AND fecha = CURRENT_DATE;
+    ```
+  </Step>
+
+  <Step title="Insert default users">
+    Run the full `supabase_usuarios.sql` script to seed the two default accounts. See [User management](/setup/user-management) for the complete script and instructions.
+  </Step>
+</Steps>
+
+## Row Level Security
+
+RLS is enabled on the `usuarios` table by default (see Step 3). The single policy allows the `anon` role to `SELECT` rows where `activo = TRUE`, which is exactly what `loginUsuario()` requires.
+
+The `viajes_camiones` and `incidencias` tables do not ship with RLS policies by default. If your Supabase project uses the anon key in the browser (which it does), ensure the **anon** role has `SELECT`, `INSERT`, and `UPDATE` permissions on those tables, or create appropriate RLS policies to match your security requirements.
+
+<Tip>
+  You can verify permissions in the Supabase Dashboard under **Table Editor → [table name] → RLS** or in the **Authentication → Policies** section.
+</Tip>

@@ -1,0 +1,92 @@
+---
+title: "Queue management"
+description: "Monitor waiting trucks, understand queue ordering, and manage the truck queue."
+---
+
+The **waiting queue** (`cola` state) holds all trucks that have arrived at the yard but have not yet been assigned to a bay. It is displayed in the footer bar at the bottom of the screen.
+
+## Queue data sources
+
+| Mode | Source | Refresh rate |
+|------|--------|--------------|
+| **Real** | Supabase — `viajes_camiones` table, `estado = 'En cola'`, ordered by `hora_llegada ASC` | Every 6 s (`fetchCamionesCola`) |
+| **Simulation** | Locally generated random trucks | New truck added every 7 s |
+
+In real mode, trucks already assigned to bays (`enProceso`) are filtered out of each poll response so they don't reappear in the queue.
+
+<Note>
+Simulation mode is only available to the **admin** role. The **cliente** role always starts in real mode with fixed traffic-light thresholds (yellow = 60 min, red = 120 min).
+</Note>
+
+## Queue layout
+
+<Tabs>
+  <Tab title="Desktop (≥ 1024 px)">
+    The queue renders in a **5-column grid** inside the footer. Each cell is a full `TarjetaCamion` card. The footer is scrollable vertically when there are more than 5 trucks.
+  </Tab>
+  <Tab title="Tablet (768 – 1023 px)">
+    Same 5-column `TarjetaCamion` grid, but with an additional **ℹ️ info button** per card that opens a detail drawer.
+  </Tab>
+  <Tab title="Mobile (&lt; 768 px)">
+    The queue renders as a **horizontal scrollable strip**. Each item shows a compact tile (traffic light dot, plate, operation badge) plus a separate **ℹ️** button. Tap the tile to select the truck for bay assignment; tap ℹ️ to open the detail drawer.
+  </Tab>
+</Tabs>
+
+## TarjetaCamion fields
+
+Each `TarjetaCamion` card in the desktop/tablet queue displays:
+
+| Field | Source | Notes |
+|-------|--------|-------|
+| Shift badge (`T1` / `T2` / `T3`) | `camion.turno` | Violet badge, top-left |
+| Traffic light dot | `camion.estadoAlerta` | Green / yellow / red; pulses when red |
+| Plate | `camion.placa` | Bold, colored by alert state |
+| Truck type | `camion.tipoCodigo` → `NOMBRES_TIPO_CAMION` | e.g., *Parihuelero*, *Jumbo* |
+| Operation badge | `camion.operacionCodigo` | `⬆ CARGA` (blue) or `⬇ DESCARGA` (green) |
+| Product | `camion.producto` | Truncated with ellipsis |
+| Owner | `camion.propietario` | |
+| Arrival time | `camion.hora` | ISO string or HH:MM:SS |
+| Wait time | `Date.now() - camion.tiempoLlegadaCola` | Updates every second; formatted as `Xh Ym` (real) or `Xs` (simulation) |
+| Incident warning | `camion.incidencias > 0` | ⚠️ amber icon shown if any incident recorded |
+
+## Traffic light thresholds
+
+The `estadoAlerta` field is updated every second by a `setInterval` in `SimuladorMapa`:
+
+| Color | Condition (real mode) | Condition (simulation mode) |
+|-------|-----------------------|-----------------------------|
+| Green | < 61 min | < configured yellow threshold (s) |
+| Yellow | 61 – 120 min | configured yellow – (red − 1) s |
+| Red | ≥ 121 min | ≥ configured red threshold (s) |
+
+`maxAlertaReached` is a ratchet: once a truck goes red it stays recorded as red even if the operator resets thresholds.
+
+## Mobile detail drawer
+
+Tapping the **ℹ️** button on any queue item opens a bottom sheet with the full truck record:
+
+| Field | Value |
+|-------|-------|
+| Placa | Plate number |
+| Operación | CARGA or DESCARGA |
+| Tipo | Truck type code |
+| Producto | Product name |
+| Propietario | Owner company |
+| Estado semáforo | `verde` / `amarillo` / `rojo` |
+| Ubicación | Bay name or *En cola* |
+| Tiempo en cola | Formatted elapsed time |
+| Incidencias | Count of registered incidents |
+
+Tap anywhere outside the sheet, or the **Cerrar** button, to dismiss it.
+
+## Queue counter
+
+The footer header bar always shows a live count:
+
+```
+🚛 COLA DE ESPERA · {cola.length}
+```
+
+On desktop/tablet a pill badge echoes the count. When the session is not active, a hint text reads *"Presiona ▶ Iniciar para comenzar"*.
+
+When a truck is assigned to a bay it is immediately spliced out of `cola`. When it is finalized it is removed from `enProceso` — it does not return to the queue.

@@ -1,0 +1,383 @@
+---
+title: "Data types"
+description: "TypeScript type definitions used throughout the application."
+---
+
+All types are exported from `src/types.ts` and imported wherever type safety is needed across the app.
+
+## Primitive types
+
+### `TipoCamion`
+
+```ts
+export type TipoCamion = 'P' | 'J' | 'B' | 'T' | 'O';
+```
+
+Represents the internal truck type code used by the simulator and bay-compatibility checks.
+
+| Code | Full name     | Description                              |
+|------|---------------|------------------------------------------|
+| `P`  | Parihuelero   | Standard pallet truck                    |
+| `J`  | Jumbo         | Oversized/jumbo truck                    |
+| `B`  | Bi-tren       | Double-trailer articulated truck         |
+| `T`  | Tolva         | Bulk/hopper truck                        |
+| `O`  | Otros         | Any truck type not matching the above    |
+
+The raw DB value (e.g. `'parihuelero'`, `'bi-tren'`) is converted to this code by `parseTipo()` in `supabaseService.ts`.
+
+---
+
+### `OperacionCodigo`
+
+```ts
+export type OperacionCodigo = 'C' | 'D';
+```
+
+| Code | Meaning         |
+|------|-----------------|
+| `C`  | Carga (load)    |
+| `D`  | Descarga (unload) |
+
+Derived from the `operacion` column in `viajes_camiones`: any value starting with `'c'` maps to `'C'`; all others map to `'D'`.
+
+---
+
+### `EstadoAlerta`
+
+```ts
+export type EstadoAlerta = 'verde' | 'amarillo' | 'rojo';
+```
+
+Drives the traffic-light semaphore displayed on each truck card in the queue and on bay overlays.
+
+| Value      | Hex color   | Meaning                                         |
+|------------|-------------|-------------------------------------------------|
+| `verde`    | `#22c55e`   | Within acceptable wait time                     |
+| `amarillo` | `#eab308`   | Warning — approaching timeout (`tiempoAmarillo`)|
+| `rojo`     | `#ef4444`   | Critical — exceeded timeout (`tiempoRojo`)      |
+
+Thresholds are set per session in `ConfigSimulador`.
+
+---
+
+### `Rol`
+
+```ts
+export type Rol = 'admin' | 'cliente';
+```
+
+| Value     | Permissions                                          |
+|-----------|------------------------------------------------------|
+| `admin`   | Full access: drag-drop, incidents, exit marking      |
+| `cliente` | Read-only dashboard view                             |
+
+---
+
+## Interfaces
+
+### `Camion`
+
+The main truck entity managed by React state. Created by mapping a `viajes_camiones` DB row inside `fetchCamionesCola()`.
+
+```ts
+export interface Camion {
+  id: string;
+  id_db: number;
+  id_viaje: string;
+  placa: string;
+  frotcom?: string;
+  propietario: string;
+  fecha: string;
+  hora: string;
+  tipoOriginal: string;
+  tipoCodigo: TipoCamion;
+  operacionCodigo: OperacionCodigo;
+  producto: string;
+  tiempoEntradaPatio: number;
+  tiempoLlegadaCola: number;
+  estadoAlerta: EstadoAlerta;
+  maxAlertaReached: EstadoAlerta;
+  bahiaActual?: string;
+  turno?: 1 | 2 | 3;
+  incidencias?: number;
+  incidenciaAbierta?: boolean;
+}
+```
+
+<ResponseField name="id" type="string" required>
+  Internal React key. String representation of the `viajes_camiones.id` integer.
+</ResponseField>
+
+<ResponseField name="id_db" type="number" required>
+  The raw integer PK from `viajes_camiones.id`. Used as the foreign key when inserting into the `incidencias` table.
+</ResponseField>
+
+<ResponseField name="id_viaje" type="string" required>
+  The business-level unique trip identifier (`viajes_camiones.id_viaje`, text UNIQUE). Used as the primary lookup key for UPDATE queries; falls back to `id_db` when `id_viaje` is the numeric id in string form.
+</ResponseField>
+
+<ResponseField name="placa" type="string" required>
+  Truck license plate. Mapped from the `tracto` column.
+</ResponseField>
+
+<ResponseField name="frotcom" type="string">
+  Optional GPS/fleet tracking identifier from the `frotcom` column. May be `undefined` if the column is null.
+</ResponseField>
+
+<ResponseField name="propietario" type="string" required>
+  Owner/carrier name.
+</ResponseField>
+
+<ResponseField name="fecha" type="string" required>
+  Trip date in `YYYY-MM-DD` format from the `fecha` column.
+</ResponseField>
+
+<ResponseField name="hora" type="string" required>
+  Arrival time string in `HH:MM:SS` format, mapped from `hora_llegada`.
+</ResponseField>
+
+<ResponseField name="tipoOriginal" type="string" required>
+  Raw `tipo_unidad` string from the database (e.g. `'parihuelero'`, `'bi-tren'`). Preserved for display purposes.
+</ResponseField>
+
+<ResponseField name="tipoCodigo" type="TipoCamion" required>
+  Normalized truck type code derived from `tipoOriginal` via `parseTipo()`.
+</ResponseField>
+
+<ResponseField name="operacionCodigo" type="OperacionCodigo" required>
+  Operation type code: `'C'` for Carga, `'D'` for Descarga.
+</ResponseField>
+
+<ResponseField name="producto" type="string" required>
+  Product being loaded or unloaded. Sourced from `tipo_carga` when `operacionCodigo === 'C'`, or from `tipo_descarga` when `'D'`. Defaults to `'Sin especificar'` if the column is null.
+</ResponseField>
+
+<ResponseField name="tiempoEntradaPatio" type="number" required>
+  Millisecond timestamp representing when the truck entered the yard. Derived from `hora_llegada` anchored to today's date via `horaATimestamp()`.
+</ResponseField>
+
+<ResponseField name="tiempoLlegadaCola" type="number" required>
+  Millisecond timestamp used by the queue semaphore timer. Set to the same value as `tiempoEntradaPatio` on initial load.
+</ResponseField>
+
+<ResponseField name="estadoAlerta" type="EstadoAlerta" required>
+  Current traffic-light state of the truck. Initialized to `'verde'` on load; updated in real time by the simulator tick.
+</ResponseField>
+
+<ResponseField name="maxAlertaReached" type="EstadoAlerta" required>
+  The highest alert level this truck has ever reached in the current session. Used in reports to reflect the worst-case wait.
+</ResponseField>
+
+<ResponseField name="bahiaActual" type="string">
+  Bay ID the truck is currently assigned to (e.g. `'b3'`). `undefined` while the truck is still in queue.
+</ResponseField>
+
+<ResponseField name="turno" type="1 | 2 | 3">
+  Work shift (1 = 07:00–15:00, 2 = 15:01–23:00, 3 = 23:01–06:59). Set when the truck is moved to a bay.
+</ResponseField>
+
+<ResponseField name="incidencias" type="number">
+  Count of registered incidents (open + closed). Maximum tracked value is 3. Sourced from `conteo_incidencias` on load.
+</ResponseField>
+
+<ResponseField name="incidenciaAbierta" type="boolean">
+  `true` if the truck currently has an incident with `hora_fin IS NULL`. Drives the pulsing alert icon in the bay overlay. Initialized to `false`; refreshed by `fetchIncidenciaAbierta()`.
+</ResponseField>
+
+---
+
+### `BahiaConfig`
+
+Static configuration for a single bay. Defined in `src/Componentes/bahiasConfig.ts` and consumed by the map renderer and drag-drop validator.
+
+```ts
+export interface BahiaConfig {
+  nombre: string;
+  camionesPermitidos: TipoCamion[];
+  tareas: { D: string[]; C: string[] };
+  alerta?: string;
+  posX: number;
+  posY: number;
+}
+```
+
+<ResponseField name="nombre" type="string" required>
+  Human-readable bay name displayed in the UI (e.g. `'Bahía 3'`).
+</ResponseField>
+
+<ResponseField name="camionesPermitidos" type="TipoCamion[]" required>
+  List of truck type codes allowed to dock at this bay. A drag-drop is only valid when `tipoCodigo` is in this array.
+</ResponseField>
+
+<ResponseField name="tareas" type="{ D: string[]; C: string[] }" required>
+  Permitted product codes per operation type. `D` lists products for Descarga; `C` lists products for Carga. An empty array means that operation is not performed at this bay.
+</ResponseField>
+
+<ResponseField name="alerta" type="string">
+  Optional warning message shown in the bay overlay when a truck is assigned. Used for bays that require special coordination.
+</ResponseField>
+
+<ResponseField name="posX" type="number" required>
+  Horizontal position of the bay on the yard map as a percentage of the map container width. Applied as `left: {posX}%` in CSS.
+</ResponseField>
+
+<ResponseField name="posY" type="number" required>
+  Vertical position of the bay on the yard map as a percentage of the map container height. Applied as `top: {posY}%` in CSS.
+</ResponseField>
+
+---
+
+### `ConfigSimulador`
+
+Session-level configuration stored in React state and persisted to `localStorage`.
+
+```ts
+export interface ConfigSimulador {
+  modo: 'simulacion' | 'real';
+  tiempoAmarillo: number;
+  tiempoRojo: number;
+  rol: Rol;
+}
+```
+
+<ResponseField name="modo" type="'simulacion' | 'real'" required>
+  `'simulacion'` — demo mode with mock data. `'real'` — live data from Supabase.
+</ResponseField>
+
+<ResponseField name="tiempoAmarillo" type="number" required>
+  Minutes after which a truck's `estadoAlerta` transitions from `'verde'` to `'amarillo'`.
+</ResponseField>
+
+<ResponseField name="tiempoRojo" type="number" required>
+  Minutes after which a truck's `estadoAlerta` transitions from `'amarillo'` to `'rojo'`.
+</ResponseField>
+
+<ResponseField name="rol" type="Rol" required>
+  Active user role. Controls which UI actions (drag-drop, incidents, exit) are available.
+</ResponseField>
+
+---
+
+### `VwUnidadPrioridad`
+
+Shape of a single row returned by the `vista_unidad_prioridad` view.
+
+```ts
+export interface VwUnidadPrioridad {
+  tracto:              string;
+  hora_llegada:        string;
+  bahia_actual:        string | null;
+  tiempo_transcurrido: string;
+}
+```
+
+<ResponseField name="tracto" type="string" required>
+  Truck license plate of the highest-priority waiting unit.
+</ResponseField>
+
+<ResponseField name="hora_llegada" type="string" required>
+  Arrival time formatted as `HH:MM:SS`.
+</ResponseField>
+
+<ResponseField name="bahia_actual" type="string | null" required>
+  Bay ID if the truck is already assigned to a bay, or `null` if still in queue.
+</ResponseField>
+
+<ResponseField name="tiempo_transcurrido" type="string" required>
+  Elapsed wait time as a Postgres interval string in `HH:MM:SS+00` format. Parse with `intervalAMinutos()` or `intervalATexto()` before displaying.
+</ResponseField>
+
+---
+
+### `VwDashboardTurnos`
+
+Shape of a row from `vista_dashboard_turnos`. One row per calendar day.
+
+```ts
+export interface VwDashboardTurnos {
+  fecha:   string;
+  turno_1: number;
+  turno_2: number;
+  turno_3: number;
+}
+```
+
+<ResponseField name="fecha" type="string" required>
+  Calendar date as `YYYY-MM-DD`. The frontend filters to today's row.
+</ResponseField>
+
+<ResponseField name="turno_1" type="number" required>
+  Count of finalized units during shift 1 (07:00–15:00).
+</ResponseField>
+
+<ResponseField name="turno_2" type="number" required>
+  Count of finalized units during shift 2 (15:01–23:00).
+</ResponseField>
+
+<ResponseField name="turno_3" type="number" required>
+  Count of finalized units during shift 3 (23:01–06:59).
+</ResponseField>
+
+---
+
+### `VwPromedioPatioNeto`
+
+Shape of the single row returned by `vista_promedio_patio_neto`.
+
+```ts
+export interface VwPromedioPatioNeto {
+  promedio_neto_patio: string | null;
+}
+```
+
+<ResponseField name="promedio_neto_patio" type="string | null" required>
+  Net average yard time for all finalized trucks today, as a Postgres interval string `HH:MM:SS`. `null` when no trucks have been finalized yet today. Parse with `intervalAMinutos()` or `intervalATexto()`.
+</ResponseField>
+
+---
+
+### `StatsSimulador`
+
+Local-only statistics accumulated during the session. Used by `ModalReporte` while a dedicated DB view is not yet available.
+
+```ts
+export interface StatsSimulador {
+  atendidosTurno1: number;
+  atendidosTurno2: number;
+  atendidosTurno3: number;
+  total: number;
+  tiemposTotalPatio: number[];
+}
+```
+
+<ResponseField name="atendidosTurno1" type="number" required>
+  Number of trucks served during shift 1 in the current session.
+</ResponseField>
+
+<ResponseField name="atendidosTurno2" type="number" required>
+  Number of trucks served during shift 2 in the current session.
+</ResponseField>
+
+<ResponseField name="atendidosTurno3" type="number" required>
+  Number of trucks served during shift 3 in the current session.
+</ResponseField>
+
+<ResponseField name="total" type="number" required>
+  Total trucks served across all shifts in the current session.
+</ResponseField>
+
+<ResponseField name="tiemposTotalPatio" type="number[]" required>
+  Array of individual yard-time durations (in minutes) for each finalized truck. Used to compute averages in `ModalReporte`.
+</ResponseField>
+
+---
+
+## Deprecated aliases
+
+These type aliases exist only for backward compatibility with older imports. Do not use them in new code.
+
+| Deprecated name          | Use instead          |
+|--------------------------|----------------------|
+| `VwCamionMayorEspera`    | `VwUnidadPrioridad`  |
+| `VwAtendidosPorTurno`    | `VwDashboardTurnos`  |
+| `VwTiempoPromedioPatio`  | `VwPromedioPatioNeto` |

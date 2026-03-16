@@ -1,0 +1,132 @@
+---
+title: "Traffic light wait-time system"
+description: "Understand how the color-coded wait-time alerts work and how to configure thresholds."
+---
+
+Every truck in the queue has a real-time color indicator that reflects how long it has been waiting since arriving at the yard gate. The system follows a three-state traffic light model and is designed to prompt operators to act before wait times become critical.
+
+## Three alert states
+
+| State | Color | Meaning |
+|---|---|---|
+| `verde` | Green | Wait time within acceptable range — no action required |
+| `amarillo` | Yellow | Wait time approaching the limit — prepare to assign the truck |
+| `rojo` | Red | Wait time exceeded — immediate action required |
+
+The color is stored on each truck object as `estadoAlerta: EstadoAlerta`, where `EstadoAlerta = 'verde' | 'amarillo' | 'rojo'`.
+
+## Thresholds by mode and role
+
+The thresholds that trigger yellow and red differ depending on the active mode and the logged-in role:
+
+<Tabs>
+  <Tab title="Simulation mode (Admin)">
+    Thresholds are measured in **seconds** and are **configurable** by the admin in the configuration modal.
+
+    - Default yellow threshold: **60 seconds**
+    - Default red threshold: **120 seconds**
+
+    The admin can adjust these values freely to control how quickly trucks change color during training sessions.
+  </Tab>
+  <Tab title="Real mode (Admin)">
+    Thresholds are measured in **minutes** and are **fixed** at system-defined values regardless of what the admin has configured:
+
+    ```typescript
+    const TIEMPOS_AJUSTE_REAL = { tiempoAmarillo: 61, tiempoRojo: 121 } as const;
+    ```
+
+    - Yellow: **61 minutes**
+    - Red: **121 minutes**
+
+    These values ensure consistent operational standards across all real shifts.
+  </Tab>
+  <Tab title="Client role (any mode)">
+    Clients always use fixed thresholds measured in **minutes**, enforced before the config is applied:
+
+    ```typescript
+    const TIEMPOS_CLIENTE = { tiempoAmarillo: 60, tiempoRojo: 120 } as const;
+    ```
+
+    - Yellow: **60 minutes**
+    - Red: **120 minutes**
+
+    The client config modal displays these as read-only values and cannot be modified.
+  </Tab>
+</Tabs>
+
+## How the semaphore interval works
+
+The semaphore runs on a **1-second `setInterval`** that re-evaluates every truck in the queue on each tick. The calculation normalizes elapsed time to the correct unit (seconds for simulation, minutes for real) using a `factor`:
+
+```typescript
+useEffect(() => {
+  if (!simulacionActiva) return;
+
+  const umbrales = modoActual === 'real'
+    ? TIEMPOS_AJUSTE_REAL
+    : { tiempoAmarillo: tiempoAmarilloActual, tiempoRojo: tiempoRojoActual };
+
+  // factor: 1000 ms → seconds (simulation), 60_000 ms → minutes (real)
+  const factor = modoActual === 'real' ? 60_000 : 1_000;
+
+  const interval = setInterval(() => {
+    setCola(prev => prev.map(c => {
+      const unidad = (Date.now() - c.tiempoLlegadaCola) / factor;
+      const estado: EstadoAlerta =
+        unidad >= umbrales.tiempoRojo    ? 'rojo'     :
+        unidad >= umbrales.tiempoAmarillo ? 'amarillo' : 'verde';
+
+      const maxAlerta: EstadoAlerta =
+        estado === 'rojo' ? 'rojo' :
+        (c.maxAlertaReached === 'rojo' ? 'rojo' : estado);
+
+      return { ...c, estadoAlerta: estado, maxAlertaReached: maxAlerta };
+    }));
+  }, 1_000);
+
+  return () => clearInterval(interval);
+}, [simulacionActiva, modoActual, tiempoAmarilloActual, tiempoRojoActual]);
+```
+
+The elapsed time is measured from `tiempoLlegadaCola` — the timestamp (in milliseconds) recorded when the truck entered the queue — not from when it entered the yard.
+
+## `estadoAlerta` vs `maxAlertaReached`
+
+Each truck tracks two related fields:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `estadoAlerta` | `EstadoAlerta` | The **current** color based on elapsed time right now |
+| `maxAlertaReached` | `EstadoAlerta` | The **worst** color ever reached by this truck in the current session |
+
+`maxAlertaReached` only ever increases — it moves from `verde` → `amarillo` → `rojo` and never decreases. This is intentional: even if a truck is quickly assigned to a bay (removing it from the queue timer), the historical record of how long it waited is preserved in `maxAlertaReached` for reporting purposes.
+
+<Note>
+  The escalation logic ensures `maxAlertaReached` is sticky at `rojo`: once a truck has reached red, its `maxAlertaReached` stays `rojo` regardless of any subsequent recalculation.
+</Note>
+
+## Threshold summary
+
+| Role | Mode | Yellow threshold | Red threshold | Unit | Configurable? |
+|---|---|---|---|---|---|
+| Admin | Simulation | 60 (default) | 120 (default) | Seconds | Yes |
+| Admin | Real | 61 (fixed) | 121 (fixed) | Minutes | No |
+| Client | Real only | 60 (fixed) | 120 (fixed) | Minutes | No |
+
+## When to act
+
+<CardGroup cols={3}>
+  <Card title="Green" icon="circle-check">
+    Truck is within acceptable wait time. No action needed — continue normal operations.
+  </Card>
+  <Card title="Yellow" icon="triangle-exclamation">
+    Wait time is approaching the limit. Identify the truck in the queue and prepare a bay assignment.
+  </Card>
+  <Card title="Red" icon="circle-xmark">
+    Wait time has exceeded the threshold. Assign the truck to a bay immediately to avoid SLA breach.
+  </Card>
+</CardGroup>
+
+<Tip>
+  Sort the queue by `maxAlertaReached` descending (red first) to prioritize trucks that have been waiting the longest, even if they are currently showing yellow due to a semaphore recalculation edge case.
+</Tip>

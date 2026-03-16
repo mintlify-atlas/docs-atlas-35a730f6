@@ -1,0 +1,96 @@
+---
+title: "Incident management"
+description: "Register, track, and close incidents for trucks in bays, with automatic time deductions from yard averages."
+---
+
+An **incident** (`incidencia`) represents an operational interruption for a truck currently in a bay — for example a breakdown, a waiting-for-forklift pause, or a documentation issue. Each incident has an open timestamp (`hora_inicio`) and, once resolved, a close timestamp (`hora_fin`).
+
+Incident durations are automatically deducted from the net yard-time average exposed in `vista_promedio_patio_neto`.
+
+## Opening the incident modal
+
+Click the **⚠️ Incid.** button on any occupied bay card. The `ModalIncidencia` opens showing:
+
+- The truck plate, bay name, and shift
+- A counter with **3 slots** representing the maximum allowed incidents
+- The truck's product and operation
+- Average incident duration for this truck (if any incidents are already closed)
+- Open / Close action buttons
+
+## Registering an incident
+
+<Steps>
+  <Step title="Open the modal">
+    Click **⚠️ Incid.** on the bay card. The modal loads the current incident count and open/closed state from Supabase immediately.
+  </Step>
+  <Step title="Click 'Abrir incidencia'">
+    The button is enabled only when there is no currently open incident and the truck is under the 3-incident limit.
+
+    Internally, `abrirIncidencia(camion.id_db)` performs an `INSERT` into the `incidencias` table with:
+    - `hora_inicio = now()`
+    - `hora_fin = null`
+
+    The function returns an `AbrirIncidenciaResult`:
+    - `'created'` — incident created successfully
+    - `'already-open'` — another open incident already exists; no new row inserted
+    - `'error'` — Supabase write failed
+  </Step>
+  <Step title="Incident counter updates">
+    On `'created'`, the slot counter increments. The active slot pulses red. A pulsing **🔴** indicator appears in the bay card header.
+  </Step>
+  <Step title="Click 'Cerrar incidencia'">
+    When the interruption is resolved, reopen the modal and click **🟢 Cerrar incidencia**.
+
+    `cerrarIncidencia(camion.id_db)` performs an `UPDATE` setting `hora_fin = now()` on the open row.
+
+    Postgres computes `duracion_calculada = hora_fin - hora_inicio` automatically. This interval is included in the net-average calculation inside `vista_promedio_patio_neto`.
+  </Step>
+</Steps>
+
+## Incident counter slots
+
+The 3-slot counter in the modal uses color-coded states:
+
+| Slot state | Color | Meaning |
+|------------|-------|---------|
+| Empty | Gray | No incident registered yet |
+| Closed (amber ✓) | `#f59e0b` | Incident was opened and closed |
+| Open (red ●, pulsing) | `#ef4444` | Incident is currently open (no `hora_fin`) |
+
+## Pulsing bay indicator
+
+While any incident is open for the truck in a bay, the bay card header shows a pulsing **🔴** icon (`animation: pulse 1s infinite`). This is driven by `fetchIncidenciaAbierta` polling every **8 s** while the bay is occupied.
+
+## Incident limit
+
+<Warning>
+Each truck is limited to **3 incidents maximum**. Once the limit is reached:
+- The **⚠️ Incid.** button still opens the modal, but both action buttons are hidden
+- A red alert panel is shown inside the modal: *"Límite de incidencias alcanzado (3/3)"*
+- A full-screen overlay alert pulses three times in `SimuladorMapa`
+- The operator is instructed to contact the development team
+
+This limit is enforced in both the UI (`limiteSuperado` flag) and the service layer (`abrirIncidencia` checks before inserting).
+</Warning>
+
+## State synchronization
+
+The modal does not use Supabase Realtime. Instead it polls every **5 s** while open:
+
+```
+contarIncidencias(camion.id_db)   → integer count
+fetchIncidenciaAbierta(camion.id_db) → boolean
+fetchPromedioIncidencias(camion.id_db) → interval string or null
+```
+
+This keeps the displayed count and open/closed state in sync if another operator modifies the same truck concurrently.
+
+## Effect on net yard time
+
+The Supabase view `vista_promedio_patio_neto` computes:
+
+```
+promedio_neto_patio = AVG(hora_salida - hora_entrada - SUM(duracion_calculada))
+```
+
+Only finalized trucks are included. All closed incident durations for each truck are subtracted before averaging, so incidents do not inflate the reported yard efficiency metric.

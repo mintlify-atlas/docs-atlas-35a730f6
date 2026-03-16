@@ -1,0 +1,171 @@
+---
+title: "Supabase views"
+description: "Pre-aggregated database views that power the real-time dashboard panels."
+---
+
+Three read-only views pre-aggregate data from `viajes_camiones` and `incidencias`. The frontend never queries these tables directly for dashboard panels — all aggregation happens in the database.
+
+View names can be overridden with environment variables:
+
+| Variable               | Default                     |
+|------------------------|-----------------------------|
+| `VITE_VIEW_PRIORIDAD`  | `vista_unidad_prioridad`    |
+| `VITE_VIEW_TURNOS`     | `vista_dashboard_turnos`    |
+| `VITE_VIEW_PROMEDIO`   | `vista_promedio_patio_neto` |
+
+---
+
+## `vista_unidad_prioridad`
+
+**Panel:** "Unidad Mayor Prioridad" 
+**Fetched by:** `fetchUnidadPrioridad()`
+
+Returns the single truck that has been waiting the longest. Only trucks with `estado <> 'Finalizado'` are considered. The view orders by `hora_llegada ASC` and returns the top row.
+
+### Columns
+
+<ResponseField name="tracto" type="text">
+  License plate of the highest-priority truck.
+</ResponseField>
+
+<ResponseField name="hora_llegada" type="text">
+  Arrival time in `HH:MM:SS` format.
+</ResponseField>
+
+<ResponseField name="bahia_actual" type="text | null">
+  Bay ID if the truck is in a bay, or `null` if still queued.
+</ResponseField>
+
+<ResponseField name="tiempo_transcurrido" type="text">
+  Elapsed time since arrival, computed as a Postgres interval and serialized as `HH:MM:SS+00`. Pass this value to `intervalAMinutos()` or `intervalATexto()` before displaying.
+</ResponseField>
+
+### Usage
+
+```ts
+const prioridad = await fetchUnidadPrioridad();
+if (prioridad) {
+  console.log(prioridad.tracto);                        // "ABC-123"
+  console.log(intervalATexto(prioridad.tiempo_transcurrido)); // "2h 15m"
+}
+```
+
+<Note>
+  `tiempo_transcurrido` arrives as `"HH:MM:SS+00"` — a Postgres interval with a timezone offset suffix. `intervalAMinutos()` strips the `+00` before parsing.
+</Note>
+
+---
+
+## `vista_dashboard_turnos`
+
+**Panel:** "Conteo por Turno" 
+**Fetched by:** `fetchDashboardTurnos()`
+
+Counts finalized units (`estado = 'Finalizado'`) grouped by work shift and calendar day. One row is produced per day. The frontend queries only the row for today's date.
+
+Shift time ranges:
+
+| Column    | Hours              |
+|-----------|--------------------|
+| `turno_1` | 07:00 – 15:00      |
+| `turno_2` | 15:01 – 23:00      |
+| `turno_3` | 23:01 – 06:59      |
+
+### Columns
+
+<ResponseField name="fecha" type="text">
+  Calendar date as `YYYY-MM-DD`. `fetchDashboardTurnos()` filters with `.eq('fecha', hoy)` where `hoy` is the local date formatted by the browser.
+</ResponseField>
+
+<ResponseField name="turno_1" type="integer">
+  Count of trucks finalized in shift 1.
+</ResponseField>
+
+<ResponseField name="turno_2" type="integer">
+  Count of trucks finalized in shift 2.
+</ResponseField>
+
+<ResponseField name="turno_3" type="integer">
+  Count of trucks finalized in shift 3.
+</ResponseField>
+
+### Usage
+
+```ts
+const turnos = await fetchDashboardTurnos();
+if (turnos) {
+  console.log(`Turno 1: ${turnos.turno_1}`);
+  console.log(`Turno 2: ${turnos.turno_2}`);
+  console.log(`Turno 3: ${turnos.turno_3}`);
+}
+// Returns null if no trucks have been finalized today yet.
+```
+
+<Note>
+  `fetchDashboardTurnos()` returns `null` (not an empty object) when no row exists for today. Always null-check before accessing shift counts.
+</Note>
+
+---
+
+## `vista_promedio_patio_neto`
+
+**Panel:** "Tiempo Promedio Patio" 
+**Fetched by:** `fetchPromedioPatioNeto()`
+
+Computes the net average time trucks spend in the yard for all finalized trips today. "Net" means total yard time (bruto) minus the sum of incident durations (`duracion_calculada`) for each truck. This filters out time lost to incidents from the operational KPI.
+
+### Columns
+
+<ResponseField name="promedio_neto_patio" type="text | null">
+  Postgres interval formatted as `HH:MM:SS`. `null` when no trucks have been finalized today. Pass to `intervalAMinutos()` or `intervalATexto()` for display.
+</ResponseField>
+
+### Usage
+
+```ts
+const promedio = await fetchPromedioPatioNeto();
+if (promedio?.promedio_neto_patio) {
+  console.log(intervalATexto(promedio.promedio_neto_patio)); // "1h 42m"
+}
+```
+
+---
+
+## Interval parsing helpers
+
+Both `tiempo_transcurrido` and `promedio_neto_patio` arrive as Postgres interval strings. Two helpers in `supabaseService.ts` convert them for display.
+
+### `intervalAMinutos(interval)`
+
+```ts
+export function intervalAMinutos(interval: string | null | undefined): number
+```
+
+Parses a Postgres interval string and returns the total duration in minutes as a `number`. Returns `0` for `null`, `undefined`, or unparseable inputs.
+
+Handled formats:
+
+| Input format              | Example                   |
+|---------------------------|---------------------------|
+| Standard                  | `"02:15:00"`              |
+| With milliseconds         | `"02:15:00.500"`          |
+| Negative (night-shift)    | `"-00:30:00"`             |
+| Multi-day                 | `"1 day 02:30:00"`        |
+| Multi-day with TZ offset  | `"1 day 02:30:00+00"`     |
+| With TZ offset            | `"02:15:00+00"`           |
+
+The function strips the `+HH` timezone suffix before parsing, then extracts optional day counts from `"X day(s)"` prefixes.
+
+### `intervalATexto(interval)`
+
+```ts
+export function intervalATexto(interval: string | null | undefined): string
+```
+
+Formats a Postgres interval to a human-readable string by calling `intervalAMinutos()` internally.
+
+| Condition              | Output example |
+|------------------------|----------------|
+| `min > 60`             | `"2h 15m"`     |
+| `1 ≤ min ≤ 60`         | `"42m"`        |
+| `min ≤ 0`              | `"< 1m"`       |

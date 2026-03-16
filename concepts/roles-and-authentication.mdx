@@ -1,0 +1,94 @@
+---
+title: "Roles and authentication"
+description: "Understand admin and client roles and how PIN-based login works."
+---
+
+Every user session in the Backus Simulador de Camiones is scoped to one of two roles. The role is resolved at login time and determines which features, modes, and thresholds are available for the rest of the session.
+
+## Roles
+
+<CardGroup cols={2}>
+  <Card title="Admin" icon="crown">
+    Full access. Can choose between simulation and real mode, configure traffic-light thresholds, and manage yard operations.
+  </Card>
+  <Card title="Client" icon="eye">
+    Read-only monitoring. Always locked to real mode with fixed thresholds (60 min yellow, 120 min red). Cannot edit any configuration.
+  </Card>
+</CardGroup>
+
+### Capability comparison
+
+| Capability | Admin | Client |
+|---|---|---|
+| Real mode | Yes | Yes (only mode available) |
+| Simulation mode | Yes | No |
+| Configure yellow/red thresholds | Yes | No |
+| View queue and bay assignments | Yes | Yes |
+| Drag trucks to bays | Yes | No |
+
+<Note>
+  Even if a client user opens the configuration modal, the app forcibly resets `modo` to `'real'` and thresholds to 60/120 before applying the config — this is enforced in both `ModalConfig.tsx` and `SimuladorMapa.tsx`.
+</Note>
+
+## The `UsuarioLogin` interface
+
+After a successful login the app receives a typed object that carries the authenticated user's identity for the entire session:
+
+```typescript
+export interface UsuarioLogin {
+  id:     number;
+  email:  string;
+  rol:    'admin' | 'cliente';
+  nombre: string | null;
+}
+```
+
+The `rol` field from this object is passed to `ConfigSimulador` and flows down to every component that gates functionality by role.
+
+## Login flow
+
+Authentication is handled by the `loginUsuario()` function in `src/services/supabaseService.ts`. The flow is:
+
+1. The user enters their **email** and **password** (PIN) in `ModalLogin`.
+2. The PIN is hashed client-side using a pure-JS **MD5** implementation (RFC 1321) — the same algorithm used by PostgreSQL's built-in `md5()` function.
+3. A single `SELECT` query is issued against the `usuarios` table, matching on `email`, the hashed `pin`, and `activo = true`.
+4. If exactly one row is returned, the user is authenticated and their `rol` is extracted.
+
+```typescript
+export async function loginUsuario(
+  email: string,
+  password: string
+): Promise<UsuarioLogin | null> {
+  const pinHash = md5Hex(password);
+
+  const { data, error } = await supabase
+    .from('usuarios')
+    .select('id, email, rol, nombre')
+    .eq('email', email.trim().toLowerCase())
+    .eq('pin', pinHash)
+    .eq('activo', true)
+    .maybeSingle();
+
+  if (error) { manejarError('loginUsuario', error); return null; }
+  if (!data)  return null;
+
+  return {
+    id:     data.id     as number,
+    email:  data.email  as string,
+    rol:    data.rol    as 'admin' | 'cliente',
+    nombre: data.nombre as string | null,
+  };
+}
+```
+
+<Tip>
+  `maybeSingle()` returns `null` (not an error) when no row matches, so an incorrect email or PIN simply results in a `null` response and a friendly error message in the UI — no exception is thrown.
+</Tip>
+
+## Row Level Security on `usuarios`
+
+The `usuarios` table enforces Row Level Security (RLS) in Supabase. Only rows where `activo = true` are readable from the frontend. Inactive accounts are invisible to the query even if the email and PIN match, so deactivating a user in the database is sufficient to revoke access immediately without deleting the record.
+
+<Warning>
+  PIN hashes are stored as MD5 strings. MD5 is not a cryptographically strong password hashing function. For production deployments handling sensitive operations, consider migrating to a stronger scheme (e.g., bcrypt via a Supabase Edge Function) and avoid reusing PINs across systems.
+</Warning>

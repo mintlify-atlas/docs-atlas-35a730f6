@@ -1,0 +1,99 @@
+---
+title: "Simulation vs. real mode"
+description: "Learn when to use simulation mode for training and real mode for live operations."
+---
+
+The app ships with two operating modes controlled by the `modo` field of `ConfigSimulador`. Each mode has a distinct data source, polling strategy, and write-back behavior.
+
+```typescript
+export interface ConfigSimulador {
+  modo: 'simulacion' | 'real';
+  tiempoAmarillo: number;
+  tiempoRojo: number;
+  rol: Rol;
+}
+```
+
+<Note>
+  Only admin users can choose the mode. Clients are always locked to `'real'`.
+</Note>
+
+## Mode comparison
+
+<Tabs>
+  <Tab title="Simulation mode">
+    **Purpose:** Training, demos, and testing without touching production data.
+
+    - Trucks are **generated locally** by `generarCamionAleatorio()` — no database reads for the queue.
+    - A new truck is appended to the queue every **7 000 ms** (`INTERVALO_GENERACION_SIM_MS = 7_000`).
+    - Bay assignments and finalizations are **never written back** to Supabase.
+    - Trucks placed in a bay are **auto-finalized after 8 seconds** (handled locally in the component).
+    - Dashboard panels (turnos, average patio time) are set to `null` — live Supabase data is not fetched.
+    - Traffic-light thresholds are expressed in **seconds** and are admin-configurable.
+
+    ```typescript
+    const generador = setInterval(() => {
+      setCola(prev => [...prev, generarCamionAleatorio()]);
+    }, INTERVALO_GENERACION_SIM_MS);
+    ```
+  </Tab>
+  <Tab title="Real mode">
+    **Purpose:** Live production shifts — monitors the actual truck queue from the Backus database.
+
+    - The queue is populated by polling `viajes_camiones` every **6 000 ms** (`INTERVALO_POLLING_MS = 6_000`), filtering for `estado = 'En cola'`.
+    - Bay assignments call `actualizarBahiaDirecto()` which writes `bahia_actual` and `estado = 'Descargando'` back to Supabase.
+    - Truck finalizations call `marcarSalidaDirecto()` which writes `hora_salida` and `estado = 'Finalizado'` back to Supabase.
+    - Dashboard panels are refreshed on the same 6-second polling cycle.
+    - Traffic-light thresholds are **fixed** at 61 min yellow / 121 min red (`TIEMPOS_AJUSTE_REAL`), regardless of admin configuration.
+
+    ```typescript
+    const cargarColaReal = async () => {
+      const camiones = await fetchCamionesCola();
+      const idsEnBahia = new Set(Object.values(enProcesoRef.current).map(c => c.id));
+      setCola(camiones.filter(c => !idsEnBahia.has(c.id)));
+    };
+
+    const pollerReal = setInterval(cargarColaReal, INTERVALO_POLLING_MS);
+    ```
+  </Tab>
+</Tabs>
+
+## Timing constants
+
+| Constant | Value | Used in |
+|---|---|---|
+| `INTERVALO_GENERACION_SIM_MS` | 7 000 ms | Simulation — truck spawn interval |
+| `INTERVALO_POLLING_MS` | 6 000 ms | Real — queue and dashboard polling interval |
+| Semaphore tick | 1 000 ms | Both — color recalculation interval |
+| Auto-finalize (bay) | ~8 000 ms | Simulation only |
+
+## When to use each mode
+
+| Scenario | Recommended mode |
+|---|---|
+| Onboarding new operators | Simulation |
+| Testing bay configuration changes | Simulation |
+| Demonstrating the system to stakeholders | Simulation |
+| Active production shift | Real |
+| Monitoring the live truck queue | Real |
+| Auditing finalized trips in Supabase | Real |
+
+<Warning>
+  Never use simulation mode during an active production shift. Simulated trucks are not persisted and bay assignments are not written to the database, so any work done in simulation mode is lost when the session ends or the page refreshes.
+</Warning>
+
+## Truck generation profiles in simulation mode
+
+`generarCamionAleatorio()` generates trucks using **5 equiprobable profiles**, each modelling a different bay group to ensure the simulated queue reflects real traffic patterns:
+
+| Profile | Target bays | Truck types | Operation | Products |
+|---|---|---|---|---|
+| 0 | b0.1, b0.2, b1 | P, J, B, T, O (any) | Unload (D) | Fardos, Envases, CPC, PH, MIXD |
+| 1 | b2 | P only | Load or Unload | PP |
+| 2 | b3, b4, b5 | P, J, B, O | Load or Unload | PT, PP, MIXD / PT, PP, MIXC |
+| 3 | b10, b12 | P only | Load or Unload | PT, PP, MIXD / PT, PP, MIXC |
+| 4 | b14 | P, J, B, O | Load (C) | ENVLT |
+
+<Note>
+  There is a safety override: if a generated truck ends up with `tipoCodigo = 'T'` (Tolva) regardless of profile, the operation is forced to `'D'` (Unload) and the product is set to either `Fardos` or `PH`. Tolva trucks cannot perform load operations.
+</Note>

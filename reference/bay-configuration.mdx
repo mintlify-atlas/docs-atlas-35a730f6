@@ -1,0 +1,188 @@
+---
+title: "Bay configuration"
+description: "Reference for all 10 bay definitions including allowed truck types, products, and visual positions."
+---
+
+`src/Componentes/bahiasConfig.ts` exports the static configuration for every bay in the yard. This file is the single source of truth for bay names, truck compatibility, permitted products, visual layout, and special alerts.
+
+## `BahiaConfig` interface
+
+```ts
+interface BahiaConfig {
+  nombre: string;
+  camionesPermitidos: TipoCamion[];
+  tareas: { D: string[]; C: string[] };
+  alerta?: string;
+  posX: number;  // percentage of map width
+  posY: number;  // percentage of map height
+}
+```
+
+<ResponseField name="nombre" type="string" required>
+  Human-readable bay label shown in the UI (e.g. `'Bahía 3'`).
+</ResponseField>
+
+<ResponseField name="camionesPermitidos" type="TipoCamion[]" required>
+  Array of truck type codes that may dock at this bay. The drag-drop validator rejects trucks whose `tipoCodigo` is not in this list.
+</ResponseField>
+
+<ResponseField name="tareas" type="{ D: string[]; C: string[] }" required>
+  Permitted product codes keyed by operation type. `D` = Descarga, `C` = Carga. An empty array means that operation is not performed at this bay.
+</ResponseField>
+
+<ResponseField name="alerta" type="string">
+  Optional warning message displayed in the bay overlay when a truck is assigned. Only set for bays that require special coordination.
+</ResponseField>
+
+<ResponseField name="posX" type="number" required>
+  Horizontal map position as a percentage of the container width. Applied as `left: {posX}%` in CSS. Calibrated against a 1061 × 580 px reference layout.
+</ResponseField>
+
+<ResponseField name="posY" type="number" required>
+  Vertical map position as a percentage of the container height. Applied as `top: {posY}%` in CSS. Calibrated against a 1061 × 580 px reference layout.
+</ResponseField>
+
+---
+
+## `BAHIAS_CONFIG` — all 10 bays
+
+| Bay ID | `nombre`   | `camionesPermitidos`      | Descarga products              | Carga products             | Alert |
+|--------|------------|---------------------------|--------------------------------|----------------------------|-------|
+| `b0.1` | Bahía 0.1  | P, J, B, T, O             | Fardos, Envases, CPC, PH, MIXD | —                          | —     |
+| `b0.2` | Bahía 0.2  | P, J, B, T, O             | Fardos, Envases, CPC, PH, MIXD | —                          | —     |
+| `b1`   | Bahía 1    | P, J, B, T, O             | Fardos, Envases, CPC, PH, MIXD | —                          | —     |
+| `b2`   | Bahía 2    | P, J, B, T, O             | Fardos, Envases, CPC, PH, MIXD | —                          | —     |
+| `b3`   | Bahía 3    | P, J, B, O                | PT, MIXD                       | PP, PT, MIXC               | —     |
+| `b4`   | Bahía 4    | P, J, B, O                | PT, MIXD                       | PP, PT, MIXC               | —     |
+| `b5`   | Bahía 5    | P, J, B, O                | PT, MIXD                       | PP, PT, MIXC               | —     |
+| `b14`  | Bahía 14   | P, J, B, O                | PT, MIXD                       | PP, PT, MIXC, ENVLT        | —     |
+| `b10`  | Bahía 10   | P only                    | PT, PP, MIXD                   | PP, PT, MIXC               | ¡ATENCIÓN! Coordina con T2. |
+| `b12`  | Bahía 12   | P only                    | PT, PP, MIXD                   | PP, PT, MIXC               | ¡ATENCIÓN! Coordina con T2. |
+
+<Warning>
+  **Bahías 10 and 12 require special coordination.** These bays only accept `Parihuelero` trucks and display the alert `"¡ATENCIÓN! Coordina con T2."` in the bay overlay whenever a truck is assigned. Ensure the T2 team is notified before confirming the operation.
+</Warning>
+
+### Visual positions
+
+All `posX` / `posY` values are calibrated to a **1061 × 580 px** reference map. The map component applies them as inline CSS: `left: {posX}%; top: {posY}%`.
+
+| Bay ID | posX   | posY   |
+|--------|--------|--------|
+| `b0.1` | 2.92%  | 31.38% |
+| `b0.2` | 2.92%  | 57.93% |
+| `b1`   | 2.45%  | 5.69%  |
+| `b2`   | 13.38% | 5.69%  |
+| `b3`   | 24.03% | 5.69%  |
+| `b4`   | 34.97% | 5.69%  |
+| `b5`   | 45.90% | 5.69%  |
+| `b14`  | 58.91% | 26.21% |
+| `b10`  | 76.81% | 33.62% |
+| `b12`  | 76.81% | 57.93% |
+
+---
+
+## `NOMBRES_TIPO_CAMION`
+
+Maps each `TipoCamion` code to its full Spanish name for display in the UI.
+
+```ts
+export const NOMBRES_TIPO_CAMION: Record<TipoCamion, string> = {
+  P: 'Parihuelero',
+  J: 'Jumbo',
+  B: 'Bi-tren',
+  T: 'Tolva',
+  O: 'Otros',
+};
+```
+
+| Code | Full name    |
+|------|--------------|
+| `P`  | Parihuelero  |
+| `J`  | Jumbo        |
+| `B`  | Bi-tren      |
+| `T`  | Tolva        |
+| `O`  | Otros        |
+
+---
+
+## `getColorEstado()`
+
+Returns the hex color string for a given `EstadoAlerta` value. Used by truck cards and bay overlays to render the traffic-light semaphore.
+
+```ts
+export const getColorEstado = (estado: EstadoAlerta): string => {
+  if (estado === 'rojo')     return '#ef4444';
+  if (estado === 'amarillo') return '#eab308';
+  return '#22c55e';
+};
+```
+
+| `EstadoAlerta` | Hex color   | Tailwind equivalent |
+|----------------|-------------|---------------------|
+| `verde`        | `#22c55e`   | `green-500`         |
+| `amarillo`     | `#eab308`   | `yellow-500`        |
+| `rojo`         | `#ef4444`   | `red-500`           |
+
+---
+
+## Type mapping — `parseTipo()`
+
+The `parseTipo()` function in `supabaseService.ts` converts the raw `tipo_unidad` string from the database into a `TipoCamion` code. The mapping is case-insensitive and trims whitespace.
+
+```ts
+const TIPO_MAP: Record<string, TipoCamion> = {
+  parihuelero:  'P',
+  pariholero:   'P',   // common misspelling
+  'pari-holero': 'P',  // hyphenated variant
+  jumbo:        'J',
+  'bi-tren':    'B',
+  bitren:       'B',   // no-hyphen variant
+  tolva:        'T',
+};
+```
+
+| Raw DB value       | Mapped code | Notes                        |
+|--------------------|-------------|------------------------------|
+| `'parihuelero'`    | `P`         |                              |
+| `'pariholero'`     | `P`         | Alternative spelling         |
+| `'pari-holero'`    | `P`         | Hyphenated variant           |
+| `'jumbo'`          | `J`         |                              |
+| `'bi-tren'`        | `B`         |                              |
+| `'bitren'`         | `B`         | No-hyphen variant            |
+| `'tolva'`          | `T`         |                              |
+| *(any other value)*| `O`         | Falls back to Otros          |
+
+---
+
+## Source reference
+
+```ts
+/**
+ * src/Componentes/bahiasConfig.ts
+ */
+import type { BahiaConfig, TipoCamion, EstadoAlerta } from '../types';
+
+export const BAHIAS_CONFIG: Record<string, BahiaConfig> = {
+  'b0.1': { nombre: 'Bahía 0.1', camionesPermitidos: ['P','J','B','T','O'], tareas: { D: ['Fardos','Envases','CPC','PH','MIXD'], C: [] },               posX: 2.92,  posY: 31.38 },
+  'b0.2': { nombre: 'Bahía 0.2', camionesPermitidos: ['P','J','B','T','O'], tareas: { D: ['Fardos','Envases','CPC','PH','MIXD'], C: [] },               posX: 2.92,  posY: 57.93 },
+  'b1':   { nombre: 'Bahía 1',   camionesPermitidos: ['P','J','B','T','O'], tareas: { D: ['Fardos','Envases','CPC','PH','MIXD'], C: [] },               posX: 2.45,  posY: 5.69  },
+  'b2':   { nombre: 'Bahía 2',   camionesPermitidos: ['P','J','B','T','O'], tareas: { D: ['Fardos','Envases','CPC','PH','MIXD'], C: [] },               posX: 13.38, posY: 5.69  },
+  'b3':   { nombre: 'Bahía 3',   camionesPermitidos: ['P','J','B','O'],     tareas: { D: ['PT','MIXD'], C: ['PP','PT','MIXC'] },                        posX: 24.03, posY: 5.69  },
+  'b4':   { nombre: 'Bahía 4',   camionesPermitidos: ['P','J','B','O'],     tareas: { D: ['PT','MIXD'], C: ['PP','PT','MIXC'] },                        posX: 34.97, posY: 5.69  },
+  'b5':   { nombre: 'Bahía 5',   camionesPermitidos: ['P','J','B','O'],     tareas: { D: ['PT','MIXD'], C: ['PP','PT','MIXC'] },                        posX: 45.9,  posY: 5.69  },
+  'b14':  { nombre: 'Bahía 14',  camionesPermitidos: ['P','J','B','O'],     tareas: { D: ['PT','MIXD'], C: ['PP','PT','MIXC','ENVLT'] },                posX: 58.91, posY: 26.21 },
+  'b10':  { nombre: 'Bahía 10',  camionesPermitidos: ['P'],                 tareas: { D: ['PT','PP','MIXD'], C: ['PP','PT','MIXC'] }, alerta: '¡ATENCIÓN! Coordina con T2.', posX: 76.81, posY: 33.62 },
+  'b12':  { nombre: 'Bahía 12',  camionesPermitidos: ['P'],                 tareas: { D: ['PT','PP','MIXD'], C: ['PP','PT','MIXC'] }, alerta: '¡ATENCIÓN! Coordina con T2.', posX: 76.81, posY: 57.93 },
+};
+
+export const NOMBRES_TIPO_CAMION: Record<TipoCamion, string> = {
+  P: 'Parihuelero', J: 'Jumbo', B: 'Bi-tren', T: 'Tolva', O: 'Otros',
+};
+
+export const getColorEstado = (estado: EstadoAlerta): string => {
+  if (estado === 'rojo')     return '#ef4444';
+  if (estado === 'amarillo') return '#eab308';
+  return '#22c55e';
+};
+```

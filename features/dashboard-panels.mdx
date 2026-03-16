@@ -1,0 +1,93 @@
+---
+title: "Dashboard panels"
+description: "Understand the four floating panels that display real-time yard metrics."
+---
+
+Four metric panels are always visible on the map. On **desktop** they float freely over the yard image and can be repositioned. On **mobile** they stack vertically below the bay grid.
+
+## The four panels
+
+<CardGroup cols={2}>
+  <Card title="Unidad Mayor Prioridad" icon="siren">
+    Shows the truck that has been waiting longest across both the queue and all bays. Displays plate, wait time badge, arrival time, and current bay location.
+  </Card>
+  <Card title="Tiempo Promedio Patio" icon="clock">
+    Net average yard dwell time in minutes. In real mode this is `promedio_neto_patio` from Supabase (incident time deducted). In simulation mode it is the session mean.
+  </Card>
+  <Card title="Conteo por Turno" icon="list-ol">
+    Count of units finalized today broken down by shift: T1, T2, and T3. Each shift also shows its time range.
+  </Card>
+  <Card title="Semáforo de Espera" icon="traffic-light">
+    Legend showing the three traffic-light color thresholds in the current unit (seconds in simulation, minutes in real mode).
+  </Card>
+</CardGroup>
+
+## Panel behavior when session is inactive
+
+All four panels display the placeholder message:
+
+> — Iniciar para ver datos —
+
+This renders when `simulacionActiva === false`.
+
+## Dragging and pinning (desktop only)
+
+On desktop each panel is wrapped in a `useDraggablePanel` hook that tracks an `(x, y)` position in viewport coordinates. Each panel also has a **📌 pin button**:
+
+| State | Cursor | Behavior |
+|-------|--------|----------|
+| Unpinned | `grab` | Hold mouse button and drag to reposition |
+| Pinned | `default` | Panel is locked; dragging is disabled |
+
+Click **📌** to toggle between pinned and unpinned. The pin icon is fully opaque when pinned and 40% opaque when unpinned.
+
+Default positions (percentage of viewport):
+
+| Panel | Default left | Default top |
+|-------|-------------|-------------|
+| Unidad Mayor Prioridad | 70.78% | 5.69% |
+| Tiempo Promedio Patio | 17.44% | 31.38% |
+| Conteo por Turno | 17.44% | 57.93% |
+| Semáforo de Espera | 88% | 82% |
+
+## Data sources and refresh rate
+
+| Panel | Simulation mode | Real mode |
+|-------|-----------------|-----------|
+| Unidad Mayor Prioridad | Local — lowest `tiempoLlegadaCola` across `[...cola, ...Object.values(enProceso)]` | Same local calculation (not from Supabase) |
+| Tiempo Promedio Patio | Session mean of `stats.tiemposTotalPatio` | `vista_promedio_patio_neto.promedio_neto_patio` · polled every 6 s |
+| Conteo por Turno | `stats.atendidosTurno1/2/3` | `vista_dashboard_turnos.turno_1/2/3` · polled every 6 s |
+| Semáforo de Espera | Configured thresholds in seconds | Fixed thresholds: yellow = 61 min, red = 121 min |
+
+### Priority unit calculation
+
+The priority truck is computed locally on every render using `useMemo`:
+
+```ts
+const candidatos = [...cola, ...Object.values(enProceso)];
+const prioridad = candidatos.reduce((prev, curr) =>
+  curr.tiempoLlegadaCola < prev.tiempoLlegadaCola ? curr : prev
+);
+```
+
+The truck with the **smallest** (earliest) `tiempoLlegadaCola` timestamp wins. When the truck is assigned to a bay it moves to `enProceso` but remains a candidate, so it can still appear as highest priority.
+
+### Average time fallback
+
+In real mode, if Supabase has not yet returned data for `promedio_neto_patio` (e.g., no trucks finalized today), the panel falls back to the local session mean `promedioSesionSim`. The subtitle reads *"promedio local (esperando sincronización del día)"* to indicate this state.
+
+## Semáforo thresholds display
+
+The Semáforo panel renders the current thresholds dynamically:
+
+| Color | Label format |
+|-------|--------------|
+| Green | `Verde ≤ {tiempoAmarillo - 1} {unit}` |
+| Yellow | `Amarillo {tiempoAmarillo}–{tiempoRojo - 1} {unit}` |
+| Red | `Rojo ≥ {tiempoRojo} {unit}` |
+
+Where `{unit}` is `s` in simulation mode and `min` in real mode.
+
+<Tip>
+In real mode the yellow threshold is fixed at 61 min and red at 121 min (`TIEMPOS_AJUSTE_REAL`), regardless of any admin configuration. This ensures the semáforo legend always matches the actual alert behavior.
+</Tip>

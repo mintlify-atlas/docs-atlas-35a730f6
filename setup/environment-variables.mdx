@@ -1,0 +1,102 @@
+---
+title: "Environment variables"
+description: "Configure environment variables to connect the app to your Supabase project."
+---
+
+The app uses [Vite's built-in env system](https://vitejs.dev/guide/env-and-mode). All variables must be prefixed with `VITE_` to be accessible in browser code.
+
+## Setup
+
+<Steps>
+  <Step title="Copy the example file">
+    Copy `.env.example` to `.env` in the project root:
+
+    ```bash
+    cp .env.example .env
+    ```
+  </Step>
+
+  <Step title="Fill in your Supabase credentials">
+    Open the Supabase Dashboard, go to **Project Settings → API**, and copy:
+
+    - **Project URL** → `VITE_SUPABASE_URL`
+    - **anon / public key** → `VITE_SUPABASE_ANON_KEY`
+  </Step>
+
+  <Step title="Verify table and view names">
+    The remaining variables default to the names expected by the SQL scripts. Only change them if you renamed your tables or views.
+  </Step>
+</Steps>
+
+## Variable reference
+
+| Variable | Default value | Description |
+|---|---|---|
+| `VITE_SUPABASE_URL` | _(required)_ | Your Supabase project URL, e.g. `https://xyz.supabase.co` |
+| `VITE_SUPABASE_ANON_KEY` | _(required)_ | The anonymous/public API key from your Supabase project |
+| `VITE_TABLE_VIAJES` | `viajes_camiones` | Table that stores truck journey records |
+| `VITE_TABLE_INCIDENCIAS` | `incidencias` | Table that stores incident records |
+| `VITE_TABLE_ROLES` | `configuracion_roles` | Table that stores role configuration |
+| `VITE_VIEW_PRIORIDAD` | `vista_unidad_prioridad` | View returning the highest-priority waiting unit |
+| `VITE_VIEW_TURNOS` | `vista_dashboard_turnos` | View returning finalized unit counts grouped by shift |
+| `VITE_VIEW_PROMEDIO` | `vista_promedio_patio_neto` | View returning the average net yard time for today |
+
+## .env.example
+
+```bash
+# ─────────────────────────────────────────────────────────────────────────────
+# PLANTILLA de variables de entorno — copia este archivo como .env
+# y rellena los valores reales. NUNCA subas .env al repositorio.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Supabase ──────────────────────────────────────────────────────────────────
+VITE_SUPABASE_URL=https://<tu-proyecto>.supabase.co
+VITE_SUPABASE_ANON_KEY=<tu-anon-key>
+
+# ── Tablas ────────────────────────────────────────────────────────────────────
+VITE_TABLE_VIAJES=viajes_camiones
+VITE_TABLE_INCIDENCIAS=incidencias
+VITE_TABLE_ROLES=configuracion_roles
+
+# ── Vistas ────────────────────────────────────────────────────────────────────
+VITE_VIEW_PRIORIDAD=vista_unidad_prioridad
+VITE_VIEW_TURNOS=vista_dashboard_turnos
+VITE_VIEW_PROMEDIO=vista_promedio_patio_neto
+```
+
+## Supabase client initialization
+
+The variables are consumed in `src/supabaseClient.ts`. The client throws an explicit error at startup if either required variable is missing:
+
+```ts
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl  = import.meta.env.VITE_SUPABASE_URL  as string;
+const supabaseKey  = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+
+if (!supabaseUrl || !supabaseKey) {
+  throw new Error(
+    '[supabaseClient] Faltan variables de entorno VITE_SUPABASE_URL o VITE_SUPABASE_ANON_KEY.\n' +
+    'Crea un archivo .env en la raíz del proyecto (ver .env.example).'
+  );
+}
+
+export const supabase = createClient(supabaseUrl, supabaseKey);
+```
+
+All services import `supabase` from this module and use `import.meta.env.VITE_TABLE_*` / `VITE_VIEW_*` directly with fallback defaults:
+
+```ts
+const T_VIAJES      = import.meta.env.VITE_TABLE_VIAJES      ?? 'viajes_camiones';
+const T_INCIDENCIAS = import.meta.env.VITE_TABLE_INCIDENCIAS  ?? 'incidencias';
+const V_PRIORIDAD   = import.meta.env.VITE_VIEW_PRIORIDAD     ?? 'vista_unidad_prioridad';
+// ...
+```
+
+<Warning>
+  Never commit `.env` to version control. It is already listed in `.gitignore`. Committing your `VITE_SUPABASE_ANON_KEY` exposes your database to public access.
+</Warning>
+
+<Note>
+  `VITE_*` variables are injected at **build time** by Vite. If you change a variable you must rebuild the app — a running dev server will not pick up the new value automatically (restart `npm run dev`).
+</Note>

@@ -1,0 +1,191 @@
+---
+title: "Database schema"
+description: "PostgreSQL table definitions for all Supabase tables used by the application."
+---
+
+The application uses three tables in the `public` schema of the Supabase project. Table and view names can be overridden via environment variables (see the `VITE_TABLE_*` and `VITE_VIEW_*` variables in `supabaseService.ts`).
+
+## `viajes_camiones`
+
+The primary table. Each row represents one truck trip through the yard, from queue entry to departure.
+
+```sql
+CREATE TABLE public.viajes_camiones (
+  id                 SERIAL PRIMARY KEY,
+  id_viaje           TEXT UNIQUE,
+  tracto             TEXT,
+  tipo_unidad        TEXT,
+  operacion          TEXT,
+  tipo_carga         TEXT,
+  tipo_descarga      TEXT,
+  propietario        TEXT,
+  frotcom            TEXT,
+  fecha              DATE,
+  hora_llegada       TIME,
+  hora_salida        TIME,
+  estado             TEXT,
+  bahia_actual       TEXT,
+  conteo_incidencias INTEGER DEFAULT 0
+);
+```
+
+<ResponseField name="id" type="integer (PK)">
+  Auto-incremented primary key. Used as `id_db` in the `Camion` type and as the foreign key in `incidencias.id_camion`.
+</ResponseField>
+
+<ResponseField name="id_viaje" type="text (UNIQUE)">
+  Business-level trip identifier. The application uses this as the primary lookup key for UPDATE operations via `actualizarBahiaDirecto()` and `marcarSalidaDirecto()`. Falls back to the integer `id` when `id_viaje` is not a distinct text value.
+</ResponseField>
+
+<ResponseField name="tracto" type="text">
+  Truck license plate. Mapped to `Camion.placa`.
+</ResponseField>
+
+<ResponseField name="tipo_unidad" type="text">
+  Raw truck type from the source system (e.g. `'parihuelero'`, `'jumbo'`, `'bi-tren'`, `'tolva'`). Converted to a `TipoCamion` code by `parseTipo()`. Any unrecognized value becomes `'O'` (Otros).
+</ResponseField>
+
+<ResponseField name="operacion" type="text">
+  Operation description. Values starting with `'c'` (case-insensitive) map to `OperacionCodigo 'C'` (Carga); all other values map to `'D'` (Descarga).
+</ResponseField>
+
+<ResponseField name="tipo_carga" type="text">
+  Product code for load operations. Used as `Camion.producto` when `operacionCodigo === 'C'`.
+</ResponseField>
+
+<ResponseField name="tipo_descarga" type="text">
+  Product code for unload operations. Used as `Camion.producto` when `operacionCodigo === 'D'`.
+</ResponseField>
+
+<ResponseField name="propietario" type="text">
+  Owner or carrier name.
+</ResponseField>
+
+<ResponseField name="frotcom" type="text (nullable)">
+  GPS/fleet tracking identifier. Optional — may be `null`.
+</ResponseField>
+
+<ResponseField name="fecha" type="date">
+  Trip date. Stored as a PostgreSQL `DATE`; arrives in JS as `YYYY-MM-DD`.
+</ResponseField>
+
+<ResponseField name="hora_llegada" type="time">
+  Yard arrival time in `HH:MM:SS` format. Used to order the queue (ascending) and to compute elapsed time in the priority view.
+</ResponseField>
+
+<ResponseField name="hora_salida" type="time (nullable)">
+  Departure time in `HH:MM:SS` format. Written by `marcarSalidaDirecto()` when a truck is finalized. `null` while the trip is still active.
+</ResponseField>
+
+<ResponseField name="estado" type="text">
+  Current trip state. Valid values:
+
+  | Value          | Meaning                                    |
+  |----------------|--------------------------------------------|
+  | `En cola`      | Truck is waiting in the queue              |
+  | `Cargando`     | Truck is in a bay performing a load        |
+  | `Descargando`  | Truck is in a bay performing an unload     |
+  | `Finalizado`   | Truck has departed; `hora_salida` is set   |
+</ResponseField>
+
+<ResponseField name="bahia_actual" type="text (nullable)">
+  The bay ID the truck is currently assigned to (e.g. `'b3'`). `null` while in queue or after finalization.
+</ResponseField>
+
+<ResponseField name="conteo_incidencias" type="integer">
+  Running count of incidents registered for this trip. Defaults to `0`. Mapped to `Camion.incidencias` on load.
+</ResponseField>
+
+<Note>
+  `fetchCamionesCola()` only selects rows where `estado = 'En cola'`, ordered by `hora_llegada ASC`. Trucks in other states are visible only through the dashboard views.
+</Note>
+
+---
+
+## `incidencias`
+
+One row per incident event. Multiple incidents can be recorded per trip. An incident is considered open while `hora_fin IS NULL`.
+
+```sql
+CREATE TABLE public.incidencias (
+  id_incidencia      SERIAL PRIMARY KEY,
+  id_camion          INTEGER NOT NULL REFERENCES public.viajes_camiones(id),
+  hora_inicio        TIME NOT NULL,
+  hora_fin           TIME,
+  duracion_calculada INTERVAL GENERATED ALWAYS AS (hora_fin - hora_inicio) STORED
+);
+```
+
+<ResponseField name="id_incidencia" type="integer (PK)">
+  Auto-incremented primary key.
+</ResponseField>
+
+<ResponseField name="id_camion" type="integer (FK)">
+  Foreign key referencing `viajes_camiones.id`. Corresponds to `Camion.id_db`.
+</ResponseField>
+
+<ResponseField name="hora_inicio" type="time">
+  Time the incident started, recorded by `abrirIncidencia()` as `HH:MM:SS` using the Peru locale clock.
+</ResponseField>
+
+<ResponseField name="hora_fin" type="time (nullable)">
+  Time the incident was closed, recorded by `cerrarIncidencia()`. `null` while the incident is still open. `fetchIncidenciaAbierta()` checks for rows where this column `IS NULL`.
+</ResponseField>
+
+<ResponseField name="duracion_calculada" type="interval">
+  Automatically computed by PostgreSQL as `hora_fin - hora_inicio`. `null` while the incident is open. Read by `fetchPromedioIncidencias()` to compute average incident duration.
+</ResponseField>
+
+<Note>
+  `abrirIncidencia()` checks for an existing open incident before inserting. If one already exists it returns `{ status: 'already-open' }` without writing to the database.
+</Note>
+
+---
+
+## `usuarios`
+
+Application user accounts. Authentication is handled entirely in the frontend by hashing the supplied password with MD5 and comparing against the stored hash — no Supabase Auth is used.
+
+```sql
+CREATE TABLE IF NOT EXISTS public.usuarios (
+  id         SERIAL PRIMARY KEY,
+  email      TEXT NOT NULL UNIQUE,
+  pin        TEXT NOT NULL,
+  rol        TEXT NOT NULL CHECK (rol IN ('admin', 'cliente')),
+  nombre     TEXT,
+  activo     BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+<ResponseField name="id" type="integer (PK)">
+  Auto-incremented primary key. Returned in the `UsuarioLogin` response.
+</ResponseField>
+
+<ResponseField name="email" type="text (UNIQUE, NOT NULL)">
+  Login email. Compared case-insensitively (`trim().toLowerCase()`) by `loginUsuario()`.
+</ResponseField>
+
+<ResponseField name="pin" type="text (NOT NULL)">
+  MD5 hash of the user's password, computed using PostgreSQL's `md5()` function on insert. The frontend replicates this hash with a pure-JS MD5 implementation before querying.
+</ResponseField>
+
+<ResponseField name="rol" type="text (NOT NULL)">
+  User role. Constrained to `'admin'` or `'cliente'` by a CHECK constraint. Maps to the `Rol` TypeScript type.
+</ResponseField>
+
+<ResponseField name="nombre" type="text (nullable)">
+  Display name. May be `null`. Returned as `UsuarioLogin.nombre`.
+</ResponseField>
+
+<ResponseField name="activo" type="boolean">
+  Whether the account is active. Defaults to `TRUE`. `loginUsuario()` filters with `.eq('activo', true)` so disabled accounts cannot log in.
+</ResponseField>
+
+<ResponseField name="created_at" type="timestamptz">
+  Account creation timestamp. Defaults to `NOW()`.
+</ResponseField>
+
+<Note>
+  Row Level Security is enabled on `usuarios`. The policy `"anon puede leer usuarios activos"` permits anonymous SELECT on rows where `activo = TRUE`, which is what the unauthenticated login query requires.
+</Note>

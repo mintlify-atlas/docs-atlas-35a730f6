@@ -1,0 +1,354 @@
+---
+title: "Supabase service API"
+description: "Complete reference for all functions exported from supabaseService.ts."
+---
+
+`src/services/supabaseService.ts` is the single source of truth for all data operations. Every SELECT, INSERT, and UPDATE that touches Supabase goes through this file.
+
+## Internal interfaces
+
+### `UsuarioLogin`
+
+Returned by `loginUsuario()` on successful authentication.
+
+```ts
+export interface UsuarioLogin {
+  id:     number;
+  email:  string;
+  rol:    'admin' | 'cliente';
+  nombre: string | null;
+}
+```
+
+<ResponseField name="id" type="number">
+  Primary key from the `usuarios` table.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Normalized (trimmed, lowercase) email of the authenticated user.
+</ResponseField>
+
+<ResponseField name="rol" type="'admin' | 'cliente'">
+  User role, used to gate UI actions. Maps to the `Rol` TypeScript type.
+</ResponseField>
+
+<ResponseField name="nombre" type="string | null">
+  Optional display name. `null` if the `nombre` column is empty.
+</ResponseField>
+
+---
+
+### `IncidenciaRow`
+
+Partial shape of an `incidencias` table row. Returned by `cerrarIncidencia()` and nested inside `AbrirIncidenciaResult`.
+
+```ts
+export interface IncidenciaRow {
+  id_incidencia?: number;
+  id_camion:      number;
+  hora_inicio:    string;
+  hora_fin?:      string;
+}
+```
+
+<ResponseField name="id_incidencia" type="number">
+  Auto-incremented PK. May be absent in the return value of some insert operations.
+</ResponseField>
+
+<ResponseField name="id_camion" type="number">
+  FK to `viajes_camiones.id`. Corresponds to `Camion.id_db`.
+</ResponseField>
+
+<ResponseField name="hora_inicio" type="string">
+  Incident start time as `HH:MM:SS`.
+</ResponseField>
+
+<ResponseField name="hora_fin" type="string">
+  Incident close time as `HH:MM:SS`. `undefined` or absent while the incident is open.
+</ResponseField>
+
+---
+
+### `AbrirIncidenciaResult`
+
+Discriminated union returned by `abrirIncidencia()`.
+
+```ts
+export type AbrirIncidenciaResult =
+  | { status: 'created';      data: IncidenciaRow }
+  | { status: 'already-open' }
+  | { status: 'error' };
+```
+
+| `status`       | Meaning                                                       |
+|----------------|---------------------------------------------------------------|
+| `created`      | Incident inserted successfully. `data` contains the new row.  |
+| `already-open` | A previous incident for this truck has no `hora_fin` yet.     |
+| `error`        | Supabase returned an error (logged to console).               |
+
+---
+
+## Queue functions
+
+### `fetchCamionesCola()`
+
+```ts
+export async function fetchCamionesCola(): Promise<Camion[]>
+```
+
+Fetches all trucks currently waiting in the queue and maps them to the `Camion` React type.
+
+**Query:** `SELECT * FROM viajes_camiones WHERE estado = 'En cola' ORDER BY hora_llegada ASC`
+
+**Mapping logic:**
+- `tipo_unidad` → `tipoCodigo` via `parseTipo()` (see [type mapping](/reference/bay-configuration#type-mapping))
+- `operacion` starting with `'c'` → `operacionCodigo: 'C'`; otherwise `'D'`
+- `producto` is sourced from `tipo_carga` (Carga) or `tipo_descarga` (Descarga)
+- `tiempoEntradaPatio` and `tiempoLlegadaCola` are both set to `horaATimestamp(hora_llegada)`, anchored to today
+- `estadoAlerta` and `maxAlertaReached` are initialized to `'verde'`
+- `incidenciaAbierta` is initialized to `false`
+
+Returns an empty array (never throws) on error.
+
+---
+
+## Dashboard panel functions
+
+### `fetchUnidadPrioridad()`
+
+```ts
+export async function fetchUnidadPrioridad(): Promise<VwUnidadPrioridad | null>
+```
+
+Fetches the truck with the longest wait time from `vista_unidad_prioridad`. Selects a single row with `.limit(1).maybeSingle()`.
+
+Returns `null` when the view is empty (no active trucks) or on error.
+
+---
+
+### `fetchDashboardTurnos()`
+
+```ts
+export async function fetchDashboardTurnos(): Promise<VwDashboardTurnos | null>
+```
+
+Fetches today's shift counts from `vista_dashboard_turnos`. The local date is computed in the browser's locale and formatted as `YYYY-MM-DD` before filtering.
+
+Returns `null` when no finalized trucks exist for today or on error.
+
+---
+
+### `fetchPromedioPatioNeto()`
+
+```ts
+export async function fetchPromedioPatioNeto(): Promise<VwPromedioPatioNeto | null>
+```
+
+Fetches the net average yard time from `vista_promedio_patio_neto`.
+
+Returns `null` when no data exists or on error. When the row exists but `promedio_neto_patio` is `null`, the field itself is `null` — always check before passing to `intervalATexto()`.
+
+---
+
+## Incident functions
+
+### `abrirIncidencia(id_camion)`
+
+```ts
+export async function abrirIncidencia(id_camion: number): Promise<AbrirIncidenciaResult>
+```
+
+<ParamField path="id_camion" type="number" required>
+  The `viajes_camiones.id` integer PK of the truck. Corresponds to `Camion.id_db`.
+</ParamField>
+
+Opens a new incident for the given truck. Before inserting, checks for an existing open incident via `fetchIncidenciaAbierta()`. If one exists, returns `{ status: 'already-open' }` without writing.
+
+On success, inserts a row into `incidencias` with `hora_inicio = NOW()` (formatted as `HH:MM:SS` in Peru locale) and `hora_fin = null`.
+
+Also detects Supabase conflict errors (HTTP 409, PG code `23505`) and maps them to `'already-open'`.
+
+---
+
+### `cerrarIncidencia(id_camion)`
+
+```ts
+export async function cerrarIncidencia(id_camion: number): Promise<IncidenciaRow | null>
+```
+
+<ParamField path="id_camion" type="number" required>
+  The `viajes_camiones.id` PK of the truck.
+</ParamField>
+
+Closes the most recent open incident for the truck with a single UPDATE. Sets `hora_fin = NOW()` where `hora_fin IS NULL`. Uses `.maybeSingle()` to take only the first matching row.
+
+Returns the updated `IncidenciaRow` on success, or `null` if no open incident was found.
+
+---
+
+### `contarIncidencias(id_camion)`
+
+```ts
+export async function contarIncidencias(id_camion: number): Promise<number>
+```
+
+<ParamField path="id_camion" type="number" required>
+  The `viajes_camiones.id` PK of the truck.
+</ParamField>
+
+Returns the total count of incidents (open and closed) for the given truck using a `COUNT(*)` head query. Returns `0` on error.
+
+---
+
+### `fetchIncidenciaAbierta(id_camion)`
+
+```ts
+export async function fetchIncidenciaAbierta(id_camion: number): Promise<boolean>
+```
+
+<ParamField path="id_camion" type="number" required>
+  The `viajes_camiones.id` PK of the truck.
+</ParamField>
+
+Returns `true` if the truck has at least one incident with `hora_fin IS NULL`. Used by the bay overlay to display the pulsing alert icon. Also called internally by `abrirIncidencia()` before inserting.
+
+Returns `false` on error.
+
+---
+
+### `fetchPromedioIncidencias(id_camion)`
+
+```ts
+export async function fetchPromedioIncidencias(id_camion: number): Promise<string | null>
+```
+
+<ParamField path="id_camion" type="number" required>
+  The `viajes_camiones.id` PK of the truck.
+</ParamField>
+
+Computes the average duration of all **closed** incidents for the truck. Fetches all `duracion_calculada` values (Postgres intervals), converts each to minutes with `intervalAMinutos()`, averages them in the client, and formats the result as `HH:MM:SS`.
+
+Returns `null` when there are no closed incidents or on error. Use with `intervalATexto()` for display.
+
+<Note>
+  Average is computed client-side because Supabase JS does not expose `AVG()` without an RPC call.
+</Note>
+
+---
+
+## Trip mutation functions
+
+### `actualizarBahiaDirecto(id_viaje, bahia_actual, estado)`
+
+```ts
+export async function actualizarBahiaDirecto(
+  id_viaje:     string,
+  bahia_actual: string,
+  estado:       'Cargando' | 'Descargando'
+): Promise<boolean>
+```
+
+<ParamField path="id_viaje" type="string" required>
+  The trip identifier. When the value is a pure integer string (e.g. `"42"`), the query uses the integer PK (`id`); otherwise it uses the text `id_viaje` column.
+</ParamField>
+
+<ParamField path="bahia_actual" type="string" required>
+  Bay ID to assign (e.g. `'b3'`).
+</ParamField>
+
+<ParamField path="estado" type="'Cargando' | 'Descargando'" required>
+  New trip state after the drag-drop. Determined by the truck's `operacionCodigo`.
+</ParamField>
+
+Updates `bahia_actual` and `estado` in `viajes_camiones` after a drag-drop event. Returns `true` on success, `false` on error.
+
+---
+
+### `marcarSalidaDirecto(id_viaje)`
+
+```ts
+export async function marcarSalidaDirecto(id_viaje: string): Promise<boolean>
+```
+
+<ParamField path="id_viaje" type="string" required>
+  The trip identifier (same PK-fallback logic as `actualizarBahiaDirecto`).
+</ParamField>
+
+Marks a trip as completed. Sets `estado = 'Finalizado'` and `hora_salida = NOW()` (formatted as `HH:MM:SS` in Peru locale).
+
+Returns `false` if no row was updated (e.g. the trip was already finalized or the ID is incorrect) and logs a warning to the console.
+
+---
+
+## Authentication
+
+### `loginUsuario(email, password)`
+
+```ts
+export async function loginUsuario(
+  email:    string,
+  password: string
+): Promise<UsuarioLogin | null>
+```
+
+<ParamField path="email" type="string" required>
+  User email address. Trimmed and lowercased before querying.
+</ParamField>
+
+<ParamField path="password" type="string" required>
+  Plain-text password. Hashed with the built-in MD5 implementation before the SELECT query.
+</ParamField>
+
+Authenticates against the `usuarios` table. Hashes `password` using the pure-JS `md5Hex()` function (RFC 1321, identical output to PostgreSQL's `md5()`), then executes:
+
+```sql
+SELECT id, email, rol, nombre
+FROM usuarios
+WHERE email = $1
+  AND pin   = $2
+  AND activo = true
+```
+
+Returns a `UsuarioLogin` object on success, or `null` if credentials are wrong, the account is inactive, or a network error occurs.
+
+<Note>
+  Supabase Auth is not used. Authentication is a direct table query protected by the Row Level Security policy that restricts reads to `activo = TRUE` rows.
+</Note>
+
+---
+
+## Interval helpers
+
+### `intervalAMinutos(interval)`
+
+```ts
+export function intervalAMinutos(interval: string | null | undefined): number
+```
+
+<ParamField path="interval" type="string | null | undefined" required>
+  A Postgres interval string (e.g. `"02:15:00"`, `"1 day 02:30:00+00"`, `"-00:30:00"`).
+</ParamField>
+
+Parses a Postgres interval to total minutes. Returns `0` for null, undefined, empty, or non-string inputs.
+
+Handled formats: `HH:MM:SS`, `HH:MM:SS.mmm`, `-HH:MM:SS` (negative), `1 day HH:MM:SS`, `1 day HH:MM:SS+00`.
+
+---
+
+### `intervalATexto(interval)`
+
+```ts
+export function intervalATexto(interval: string | null | undefined): string
+```
+
+<ParamField path="interval" type="string | null | undefined" required>
+  A Postgres interval string.
+</ParamField>
+
+Formats a Postgres interval to a human-readable string:
+
+| Minutes        | Output      |
+|----------------|-------------|
+| `> 60`         | `"2h 15m"`  |
+| `1 – 60`       | `"42m"`     |
+| `≤ 0`          | `"< 1m"`    |

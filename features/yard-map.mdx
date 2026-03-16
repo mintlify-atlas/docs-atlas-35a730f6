@@ -1,0 +1,138 @@
+---
+title: "Yard map"
+description: "Use the interactive drag-and-drop yard map to assign trucks to bays and track yard state."
+---
+
+The yard map is the central workspace of the simulator. It renders a satellite image of the Backus patio (`patio.png`) with **10 bay overlays** positioned absolutely at percentage coordinates. Each bay shows real-time state, the assigned truck, and action buttons.
+
+## Bay layout
+
+Bays are defined in `bahiasConfig.ts` and positioned as `(posX%, posY%)` over the background image (reference size 1061 × 580 px).
+
+| Bay ID | Name | Truck types allowed | Operations |
+|--------|------|---------------------|------------|
+| `b0.1` | Bahía 0.1 | All (P J B T O) | DESCARGA: Fardos, Envases, CPC, PH, MIXD |
+| `b0.2` | Bahía 0.2 | All (P J B T O) | DESCARGA: Fardos, Envases, CPC, PH, MIXD |
+| `b1` | Bahía 1 | All (P J B T O) | DESCARGA: Fardos, Envases, CPC, PH, MIXD |
+| `b2` | Bahía 2 | All (P J B T O) | DESCARGA: Fardos, Envases, CPC, PH, MIXD |
+| `b3` | Bahía 3 | P J B O | DESCARGA: PT, MIXD · CARGA: PP, PT, MIXC |
+| `b4` | Bahía 4 | P J B O | DESCARGA: PT, MIXD · CARGA: PP, PT, MIXC |
+| `b5` | Bahía 5 | P J B O | DESCARGA: PT, MIXD · CARGA: PP, PT, MIXC |
+| `b14` | Bahía 14 | P J B O | DESCARGA: PT, MIXD · CARGA: PP, PT, MIXC, ENVLT |
+| `b10` | Bahía 10 | P only | DESCARGA: PT, PP, MIXD · CARGA: PP, PT, MIXC |
+| `b12` | Bahía 12 | P only | DESCARGA: PT, PP, MIXD · CARGA: PP, PT, MIXC |
+
+<Note>
+Bahías 10 and 12 show a coordination alert (`¡ATENCIÓN! Coordina con T2.`) when a truck is about to be assigned. A browser `confirm()` dialog blocks the drop until acknowledged.
+</Note>
+
+Each occupied bay card displays:
+- Bay name and traffic light dot (green / yellow / red)
+- Truck plate (colored by traffic light state)
+- Full truck type name (e.g., *Parihuelero*, *Jumbo*, *Bi-tren*)
+- Operation direction: `⬆ CARGANDO` or `⬇ DESCARGANDO`
+- Product
+- A progress bar that fills toward the red threshold
+- Elapsed wait time
+- **⚠️ Incid.** and **✅ Salida** action buttons
+
+Free bays show their allowed products per operation and a `— libre —` placeholder.
+
+## Visual modes
+
+### Dark / Light mode
+
+Toggle with the sun/moon button in the header. The `darkMode` state controls the background image filter and all component color classes.
+
+| Mode | Image filter | Background overlay |
+|------|-------------|--------------------|
+| Dark | `brightness(0.60) saturate(0.9)` | `rgba(6,13,26,0.28)` |
+| Light | `brightness(0.85) saturate(1.1)` | `rgba(240,245,255,0.15)` |
+
+### Help mode (`modoAyuda`)
+
+Activate with the help button in the header. When active and a truck is being dragged or tapped:
+
+- Compatible bays glow **green** (`ring-2 ring-blue-400` + pulsing)
+- Incompatible bays glow **red** (`ring-2 ring-red-400`)
+- The background image brightness is boosted slightly on top of the current dark/light base
+
+Help mode does not change the active theme — it only adds a brightness overlay.
+
+## Assigning trucks to bays
+
+<Tabs>
+  <Tab title="Desktop">
+    On desktop (viewport ≥ 1024 px) bays are positioned absolutely over the background image. Drag and drop is the primary interaction.
+
+    <Steps>
+      <Step title="Start a session">
+        Click **▶ Iniciar** in the header to open the config modal. Choose mode (Simulation or Real) and confirm.
+      </Step>
+      <Step title="Grab a truck card">
+        In the footer queue, click and hold a `TarjetaCamion` card to start dragging. The `camionArrastrando` state is set.
+      </Step>
+      <Step title="Drop onto a bay">
+        Drag over a `BahiaOverlay`. A green tint confirms compatibility; red means the drop will be rejected. Release to drop.
+      </Step>
+      <Step title="Validation">
+        `validarAsignacion` checks in order:
+        1. Bay is not already occupied
+        2. Truck type is in `camionesPermitidos`
+        3. Operation (`C` or `D`) has at least one product mapping
+        4. The truck's product is found in the bay's product list (or the list contains `MIXD` / `MIXC`)
+
+        If any check fails a toast error is shown and the truck stays in the queue.
+      </Step>
+      <Step title="Truck enters the bay">
+        The truck is removed from `cola` and added to `enProceso[bahiaId]`. In real mode, `actualizarBahiaDirecto` is called to update Supabase.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Mobile">
+    On mobile (viewport &lt; 1024 px) bays render in a 2-column grid with the yard photo as a background. Drag is disabled; a **tap-to-select → tap-to-assign** flow is used instead.
+
+    <Steps>
+      <Step title="Start a session">
+        Tap **▶ Iniciar** in the header.
+      </Step>
+      <Step title="Tap a truck in the queue">
+        Tap a truck card in the bottom scroll area. The card highlights with `ring-2 ring-yellow-400 scale-105` and a status banner appears in the header: *"🚛 [PLATE] en cola — toca una bahía libre para asignar"*.
+      </Step>
+      <Step title="Tap a bay">
+        Tap any bay card on the map. Compatible bays pulse blue; incompatible bays show a red ring. Tapping confirms assignment.
+      </Step>
+      <Step title="Validation and assignment">
+        `handleTapBahia` runs the same `validarAsignacion` checks as the desktop flow. A toast error appears on failure; on success the truck moves into the bay.
+      </Step>
+      <Step title="Cancel selection">
+        Tap the same truck card again to deselect, or tap the **✕** in the header selection banner.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Moving trucks between bays
+
+<Tabs>
+  <Tab title="Desktop">
+    Drag from an **occupied** bay card (cursor shows `grab`). The `dataTransfer` carries `fromBahia = bahiaId`. Dropping onto another bay triggers `handleDropFromBahia(fromBahiaId, toBahiaId)`, which validates the move, removes the truck from the source bay, and places it in the destination.
+  </Tab>
+  <Tab title="Mobile">
+    Tap the truck inside an occupied bay to select it (the bay card shows `ring-2 ring-yellow-400`). The header banner reads *"🚛 [PLATE] en [Bay] — toca otra bahía para mover"*. Then tap the destination bay. `handleTapBahia` detects `camionSeleccionado.bahiaActual` is set and calls `handleDropFromBahia` internally.
+  </Tab>
+</Tabs>
+
+## Finalizing a truck
+
+Click **✅ Salida** on an occupied bay card.
+
+1. A browser `confirm()` dialog asks for confirmation.
+2. `handleFinalizar(bahiaId, camion)` is called.
+3. The truck is removed from `enProceso` and logged in the local `stats` (shift counter, yard time).
+4. In **real mode**: `marcarSalidaDirecto(id_viaje)` is called to update Supabase (`estado = 'Finalizado'`, `hora_salida = now`).
+5. Dashboard panels are refreshed immediately via `recargarPaneles()`.
+
+<Tip>
+A `bahiasSaliendo` ref prevents double-finalizations if the button is clicked twice before the async Supabase call completes.
+</Tip>

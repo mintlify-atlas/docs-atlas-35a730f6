@@ -1,0 +1,152 @@
+---
+title: "User management"
+description: "Create and manage users in the usuarios table for admin and client access."
+---
+
+The app uses a custom `usuarios` table for authentication — it does not use Supabase Auth. Users are identified by email + PIN, where the PIN is stored as an MD5 hash.
+
+<Warning>
+  The default credentials below are for development only. **Change them before deploying to production.**
+</Warning>
+
+## Table schema
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `serial` | Auto-incrementing primary key |
+| `email` | `text UNIQUE NOT NULL` | User's email address (lowercased on login) |
+| `pin` | `text NOT NULL` | MD5 hash of the plaintext PIN |
+| `rol` | `text NOT NULL` | `'admin'` or `'cliente'` |
+| `nombre` | `text` | Display name (optional) |
+| `activo` | `boolean` | `true` = can log in; `false` = account disabled |
+| `created_at` | `timestamptz` | Row creation timestamp |
+
+## Default users
+
+The `supabase_usuarios.sql` script creates two default accounts:
+
+| Email | PIN | Role | Display name |
+|---|---|---|---|
+| `admin@backus.com` | `admin123` | `admin` | Administrador Backus |
+| `cliente@backus.com` | `cliente123` | `cliente` | Cliente Backus |
+
+### Full SQL script
+
+```sql
+-- ─────────────────────────────────────────────────────────────────────────────
+-- TABLA: usuarios
+-- Ejecutar en: Supabase Dashboard → SQL Editor
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.usuarios (
+  id         SERIAL PRIMARY KEY,
+  email      TEXT NOT NULL UNIQUE,
+  pin        TEXT NOT NULL,        -- contraseña guardada como md5(texto)
+  rol        TEXT NOT NULL CHECK (rol IN ('admin', 'cliente')),
+  nombre     TEXT,
+  activo     BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Row Level Security
+ALTER TABLE public.usuarios ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "anon puede leer usuarios activos" ON public.usuarios;
+CREATE POLICY "anon puede leer usuarios activos"
+  ON public.usuarios FOR SELECT
+  USING (activo = TRUE);
+
+-- Seed default users
+TRUNCATE public.usuarios RESTART IDENTITY;
+
+INSERT INTO public.usuarios (email, pin, rol, nombre) VALUES
+  ('admin@backus.com',   md5('admin123'),   'admin',   'Administrador Backus'),
+  ('cliente@backus.com', md5('cliente123'), 'cliente', 'Cliente Backus');
+
+-- Verify
+SELECT id, email, rol, nombre, activo FROM public.usuarios;
+```
+
+## Creating a new user
+
+Insert a row directly in the SQL Editor. Use PostgreSQL's `md5()` function to hash the PIN:
+
+```sql
+INSERT INTO public.usuarios (email, pin, rol, nombre)
+VALUES (
+  'nuevo@backus.com',
+  md5('mi_pin_secreto'),
+  'cliente',
+  'Nuevo Usuario'
+);
+```
+
+<Note>
+  Email addresses are stored and compared in lowercase. `loginUsuario()` calls `.trim().toLowerCase()` on the input before querying the database.
+</Note>
+
+## Deactivating a user
+
+Set `activo = false` to prevent a user from logging in without deleting their record:
+
+```sql
+UPDATE public.usuarios
+SET activo = false
+WHERE email = 'usuario@backus.com';
+```
+
+To re-enable the account:
+
+```sql
+UPDATE public.usuarios
+SET activo = true
+WHERE email = 'usuario@backus.com';
+```
+
+## Changing a PIN
+
+```sql
+UPDATE public.usuarios
+SET pin = md5('nuevo_pin')
+WHERE email = 'usuario@backus.com';
+```
+
+## How authentication works
+
+The `loginUsuario()` function in `src/services/supabaseService.ts` performs a single `SELECT` that matches all three conditions in one query:
+
+```ts
+export async function loginUsuario(
+  email: string,
+  password: string
+): Promise<UsuarioLogin | null> {
+  const pinHash = md5Hex(password);       // MD5 hash computed in the browser
+
+  const { data, error } = await supabase
+    .from('usuarios')
+    .select('id, email, rol, nombre')
+    .eq('email', email.trim().toLowerCase())
+    .eq('pin', pinHash)                   // compare against stored MD5 hash
+    .eq('activo', true)                   // inactive users are rejected
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data as UsuarioLogin;
+}
+```
+
+### PIN hashing
+
+PINs are hashed with **MD5** (RFC 1321), the same algorithm as PostgreSQL's `md5()` function. The browser implementation (`md5Hex()`) produces byte-identical output, so `md5('admin123')` in PostgreSQL equals `md5Hex('admin123')` in JavaScript.
+
+<Warning>
+  MD5 is not a secure password hashing algorithm. It is used here to match the existing PostgreSQL `md5()` function. For a new production deployment, consider migrating to `pgcrypto`'s `crypt()` with bcrypt, and updating `loginUsuario()` accordingly.
+</Warning>
+
+## Row Level Security
+
+The `anon` role (used by the browser Supabase client) can only `SELECT` rows where `activo = TRUE`. This means:
+
+- Inactive users cannot be read by the client at all — the query returns no rows.
+- There is no `INSERT` or `UPDATE` policy for `anon`, so users cannot modify the table from the browser.
+- All user management must be done through the SQL Editor or a trusted server-side client.
